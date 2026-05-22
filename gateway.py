@@ -107,6 +107,15 @@ class GatewayService:
         self.second_card_relative_score = float(
             self.gateway_cfg.get("second_card_relative_score", 0.85)
         )
+        self.high_confidence_semantic_score = float(
+            self.gateway_cfg.get("high_confidence_semantic_score", 0.72)
+        )
+        self.high_confidence_keyword_score = float(
+            self.gateway_cfg.get("high_confidence_keyword_score", 0.65)
+        )
+        self.high_confidence_cooldown_floor = self._clamp(
+            float(self.gateway_cfg.get("high_confidence_cooldown_floor", 0.8))
+        )
         self.edge_min_confidence = float(self.gateway_cfg.get("edge_min_confidence", 0.55))
         self.pending_tool_reasoning: dict[str, dict[tuple[str, ...], dict[str, Any]]] = {}
 
@@ -1682,6 +1691,7 @@ class GatewayService:
             return []
 
         now = datetime.now()
+        recent_ids = self.state_store.get_recent_bucket_ids(session_id, self.skip_recent_rounds)
         scored_candidates = []
         for bucket_id in candidate_ids:
             bucket = bucket_map.get(bucket_id)
@@ -1705,6 +1715,13 @@ class GatewayService:
                 cooldown_floor=self.cooldown_floor,
                 now=now,
             )
+            if bucket_id not in recent_ids and self._is_high_confidence_match(
+                semantic_score, keyword_score
+            ):
+                cooldown_multiplier = max(
+                    cooldown_multiplier,
+                    self.high_confidence_cooldown_floor,
+                )
             scored_candidates.append(
                 {
                     "bucket": bucket,
@@ -1718,11 +1735,16 @@ class GatewayService:
             )
 
         scored_candidates.sort(key=lambda item: item["score"], reverse=True)
-        recent_ids = self.state_store.get_recent_bucket_ids(session_id, self.skip_recent_rounds)
         filtered = [item for item in scored_candidates if item["bucket"]["id"] not in recent_ids]
         active_pool = filtered or scored_candidates
         selected = self._pick_dynamic_cards(active_pool)
         return [item["bucket"] for item in selected]
+
+    def _is_high_confidence_match(self, semantic_score: float, keyword_score: float) -> bool:
+        return (
+            semantic_score >= self.high_confidence_semantic_score
+            or keyword_score >= self.high_confidence_keyword_score
+        )
 
     def _get_keyword_candidates(self, query: str, buckets: list[dict]) -> dict[str, float]:
         scored = []

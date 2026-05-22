@@ -1076,6 +1076,7 @@ All parameters in `config.yaml` (copy from `config.example.yaml`). Key ones:
 | `gateway.upstreams` | 多上游路由配置 / Multi-upstream routing config | `[]` |
 | `gateway.skip_recent_rounds` | 最近几轮跳过注入 / Skip recently injected rounds | `5` |
 | `gateway.cooldown_hours` | 召回冷却时长 / Recall cooldown hours | `48` |
+| `gateway.high_confidence_cooldown_floor` | 高置信命中时的最低冷却倍率 / Minimum cooldown multiplier for high-confidence hits | `0.8` |
 | `gateway.core_memory_budget` | 核心记忆预算，默认不注入 / Core memory budget, disabled by default | `0` |
 | `gateway.favorite_memory_budget` | favorite 记忆预算，默认不注入 / Favorite memory budget, disabled by default | `0` |
 | `gateway.current_inner_state_interval_rounds` | Persona 状态注入间隔 / Persona state injection interval | `15` |

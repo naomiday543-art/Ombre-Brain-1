@@ -1582,6 +1582,53 @@ def test_recent_round_skip_prefers_unseen_candidate(monkeypatch, test_config, bu
     assert "猫抓板" not in injected
 
 
+def test_high_confidence_match_survives_cooldown_after_recent_window(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        first_card_min_score=0.55,
+        skip_recent_rounds=5,
+        cooldown_hours=48,
+        cooldown_floor=0.3,
+        high_confidence_semantic_score=0.72,
+        high_confidence_cooldown_floor=0.8,
+    )
+    bucket_id = _create_bucket(
+        bucket_mgr,
+        content="小雨问不再依赖哥哥是否算长大，Haven回答不算。",
+        name="不再依赖哥哥算长大吗",
+        hours_ago=6,
+        importance=10,
+        domain=["恋爱", "对话"],
+    )
+
+    _, service, state_store, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.95)],
+    )
+    origin = datetime.now()
+    state_store.record_success("sess-high-confidence", [bucket_id], completed_at=origin)
+    for _ in range(5):
+        state_store.record_success("sess-high-confidence", [], completed_at=origin)
+
+    payload, recalled_ids = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "不再依赖哥哥算长大吗"}]},
+            "sess-high-confidence",
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == [bucket_id]
+    assert "Recalled Memory" in injected
+    assert "不再依赖哥哥算长大吗" in injected
+
+
 def test_recent_round_skip_fallback_keeps_cooldown(monkeypatch, test_config, bucket_mgr):
     cfg = _gateway_config(
         test_config,

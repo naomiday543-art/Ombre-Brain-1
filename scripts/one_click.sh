@@ -1066,6 +1066,255 @@ run_doctor() {
   fi
 }
 
+migration_prepare_target() {
+  local title="$1"
+  select_deploy_target_for_task "${title}"
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    ensure_mobile_tools || return 1
+  else
+    choose_compose_file
+  fi
+}
+
+migration_state_dir() {
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    printf 'state\n'
+  else
+    printf '/state\n'
+  fi
+}
+
+migration_mapping_path() {
+  printf '%s/feel_comment_backfill_mapping.json\n' "$(migration_state_dir)"
+}
+
+migration_review_path() {
+  printf '%s/feel_comment_backfill_review.md\n' "$(migration_state_dir)"
+}
+
+run_target_shell() {
+  local script="$1"
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    bash -lc "${script}"
+  else
+    local service="${OMBRE_SERVICE:-ombre-brain}"
+    ombre_compose -f "${COMPOSE_FILE}" exec -T "${service}" sh -lc "${script}"
+  fi
+}
+
+run_target_python_stdin() {
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    local python_cmd
+    python_cmd="$(detect_python_cmd)" || return 1
+    "${python_cmd}" -
+  else
+    local service="${OMBRE_SERVICE:-ombre-brain}"
+    ombre_compose -f "${COMPOSE_FILE}" exec -T "${service}" python -
+  fi
+}
+
+migration_inspect() {
+  migration_prepare_target "原版迁移检查" || return 1
+  run_target_python_stdin <<'PY'
+import asyncio
+from collections import Counter
+
+from bucket_manager import BucketManager
+from utils import load_config
+
+RELATIONSHIP_WEATHER_TAGS = {"relationship_weather", "daily_impression", "weekly_impression"}
+
+async def main():
+    config = load_config()
+    mgr = BucketManager(config)
+    buckets = await mgr.list_all(include_archive=True)
+    types = Counter(str((b.get("metadata") or {}).get("type") or "dynamic") for b in buckets)
+    feels = []
+    daily_feels = []
+    migrated_feel_ids = set()
+    comment_count = 0
+    for bucket in buckets:
+        meta = bucket.get("metadata") or {}
+        tags = {str(tag) for tag in meta.get("tags", []) or []}
+        if meta.get("type") == "feel":
+            if tags & RELATIONSHIP_WEATHER_TAGS:
+                daily_feels.append(bucket)
+            else:
+                feels.append(bucket)
+        comments = meta.get("comments") or []
+        if isinstance(comments, list):
+            comment_count += len(comments)
+            for comment in comments:
+                if isinstance(comment, dict) and comment.get("original_feel_id"):
+                    migrated_feel_ids.add(str(comment["original_feel_id"]))
+
+    print("迁移状态检查")
+    print(f"buckets_dir: {config.get('buckets_dir')}")
+    print(f"state_dir: {config.get('state_dir')}")
+    print(f"bucket 总数: {len(buckets)}")
+    for key, value in sorted(types.items()):
+        print(f"  {key}: {value}")
+    print(f"旧独立 feel（可审阅迁移）: {len(feels)}")
+    print(f"日印象/关系天气 feel（默认不迁移）: {len(daily_feels)}")
+    print(f"年轮 comments 总数: {comment_count}")
+    print(f"已带 original_feel_id 的迁移年轮: {len(migrated_feel_ids)}")
+    print("下一步：先备份，再生成旧 feel 审阅表和 mapping。")
+
+asyncio.run(main())
+PY
+}
+
+migration_backup() {
+  migration_prepare_target "原版迁移备份" || return 1
+  local stamp archive
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    archive="state/backups/ombre_migration_${stamp}.tar.gz"
+    local tmp_archive items=()
+    tmp_archive="/tmp/ombre_migration_${stamp}.tar.gz"
+    mkdir -p state/backups
+    [[ -d buckets ]] && items+=("buckets")
+    [[ -d state ]] && items+=("state")
+    [[ -f config.yaml ]] && items+=("config.yaml")
+    [[ -f .env ]] && items+=(".env")
+    if (( ${#items[@]} == 0 )); then
+      printf '没有找到可备份的 buckets/state/config.yaml/.env。\n'
+      return 1
+    fi
+    tar --exclude='state/backups' -czf "${tmp_archive}" "${items[@]}" && mv "${tmp_archive}" "${archive}" || {
+      printf '备份失败。\n'
+      return 1
+    }
+    printf '已写入备份：%s\n' "${archive}"
+  else
+    archive="/state/backups/ombre_migration_${stamp}.tar.gz"
+    run_target_shell "mkdir -p /state/backups && tar --exclude=/state/backups -czf /tmp/ombre_migration_${stamp}.tar.gz /data /state /app/config.yaml && cp /tmp/ombre_migration_${stamp}.tar.gz '${archive}'" || return 1
+    backup_file ".env"
+    backup_file "${COMPOSE_FILE}"
+    printf '已写入容器数据备份：%s\n' "${archive}"
+    printf '如果当前目录有 .env / compose，也已在宿主机备份。\n'
+  fi
+}
+
+migration_plan_feels() {
+  migration_prepare_target "旧 feel 迁移审阅" || return 1
+  local limit state_dir mapping review plan_json
+  limit="$(prompt_text '最多审阅多少条旧 feel' '80')"
+  if ! [[ "${limit}" =~ ^[0-9]+$ ]] || (( limit < 1 )); then
+    limit="80"
+  fi
+  state_dir="$(migration_state_dir)"
+  mapping="$(migration_mapping_path)"
+  review="$(migration_review_path)"
+  plan_json="${state_dir}/feel_comment_backfill_plan.json"
+  run_target_shell "mkdir -p '${state_dir}' && python scripts/plan_feel_comment_backfill.py --limit '${limit}' --top 3 --min-overlap 2 --mapping-template '${mapping}' --review-markdown '${review}' > '${plan_json}'" || return 1
+  printf '已生成审阅表：%s\n' "${review}"
+  printf '已生成 mapping 模板：%s\n' "${mapping}"
+  printf '完整候选 JSON：%s\n' "${plan_json}"
+  printf '请先人工编辑 mapping，把确认的 suggested_source_bucket_id 复制到 source_bucket_id。\n'
+}
+
+migration_apply_feels_dry_run() {
+  migration_prepare_target "旧 feel 写入年轮预演" || return 1
+  local mapping state_dir output
+  state_dir="$(migration_state_dir)"
+  mapping="$(prompt_text 'mapping 路径' "$(migration_mapping_path)")"
+  if [[ "${mapping}" == *"'"* ]]; then
+    printf 'mapping 路径不能包含单引号。\n'
+    return 1
+  fi
+  output="${state_dir}/feel_comment_backfill_apply_dry_run.json"
+  run_target_shell "python scripts/apply_feel_comment_backfill.py --mapping '${mapping}' > '${output}'" || return 1
+  printf '预演结果：%s\n' "${output}"
+}
+
+migration_apply_feels() {
+  migration_prepare_target "旧 feel 写入年轮" || return 1
+  local mapping state_dir output
+  state_dir="$(migration_state_dir)"
+  mapping="$(prompt_text '已人工确认的 mapping 路径' "$(migration_mapping_path)")"
+  if [[ "${mapping}" == *"'"* ]]; then
+    printf 'mapping 路径不能包含单引号。\n'
+    return 1
+  fi
+  printf '这一步会把 mapping 里确认的旧 feel 写入源记忆 comments，并归档旧 feel。\n'
+  if ! prompt_yes_no '确认已经人工检查 mapping，可以写入吗' 'n'; then
+    return 0
+  fi
+  output="${state_dir}/feel_comment_backfill_apply.json"
+  run_target_shell "python scripts/apply_feel_comment_backfill.py --mapping '${mapping}' --apply --archive-feel --refresh-embeddings > '${output}'" || return 1
+  printf '写入结果：%s\n' "${output}"
+}
+
+migration_rebuild_embeddings() {
+  migration_prepare_target "迁移后重建向量库" || return 1
+  if [[ "${DEPLOY_TARGET}" == "mobile" ]]; then
+    local python_cmd batch_size
+    python_cmd="$(detect_python_cmd)" || return 1
+    batch_size="$(prompt_text '每批处理数量' "${BATCH_SIZE:-20}")"
+    "${python_cmd}" backfill_embeddings.py --refresh-all --batch-size "${batch_size}"
+  else
+    "${SCRIPT_DIR}/embedding_rebuild.sh"
+  fi
+}
+
+migration_cleanup_feels_dry_run() {
+  migration_prepare_target "旧 feel 清理预演" || return 1
+  local state_dir output
+  state_dir="$(migration_state_dir)"
+  output="${state_dir}/cleanup_migrated_feel_buckets_dry_run.json"
+  run_target_shell "python scripts/cleanup_migrated_feel_buckets.py > '${output}'" || return 1
+  printf '清理预演结果：%s\n' "${output}"
+}
+
+migration_cleanup_feels_apply() {
+  migration_prepare_target "删除已迁移旧 feel" || return 1
+  local state_dir output
+  state_dir="$(migration_state_dir)"
+  printf '这一步只删除已经在年轮 comments 里带 original_feel_id 的独立旧 feel。\n'
+  if ! prompt_yes_no '确认已经看过清理预演，可以删除吗' 'n'; then
+    return 0
+  fi
+  output="${state_dir}/cleanup_migrated_feel_buckets_apply.json"
+  run_target_shell "python scripts/cleanup_migrated_feel_buckets.py --apply > '${output}'" || return 1
+  printf '清理结果：%s\n' "${output}"
+}
+
+migration_menu() {
+  local choice
+  while true; do
+    line
+    printf '==== 池又雨二改版 Ombre 原版迁移 ====\n'
+    printf '1. 检查旧部署和迁移状态\n'
+    printf '2. 备份 buckets/state\n'
+    printf '3. 生成新版 config/env（走首次部署向导）\n'
+    printf '4. 生成旧 feel 审阅表和 mapping\n'
+    printf '5. 预演已确认 mapping 写入年轮\n'
+    printf '6. 应用已确认 mapping 写入年轮\n'
+    printf '7. 迁移后重建向量库\n'
+    printf '8. 预演清理已迁移旧 feel\n'
+    printf '9. 删除已迁移旧 feel\n'
+    printf '0. 返回上一级\n'
+    if ! read -r -p '输入（0-9）：' choice; then
+      printf '\n'
+      return 0
+    fi
+    case "${choice}" in
+      1) migration_inspect; pause ;;
+      2) migration_backup; pause ;;
+      3) first_deploy; pause ;;
+      4) migration_plan_feels; pause ;;
+      5) migration_apply_feels_dry_run; pause ;;
+      6) migration_apply_feels; pause ;;
+      7) migration_rebuild_embeddings; pause ;;
+      8) migration_cleanup_feels_dry_run; pause ;;
+      9) migration_cleanup_feels_apply; pause ;;
+      0) return 0 ;;
+      *) printf '请输入 0-9。\n' ;;
+    esac
+  done
+}
+
 vector_menu() {
   local choice
   while true; do
@@ -1099,8 +1348,9 @@ main_menu() {
     printf '3. 错误排查\n'
     printf '4. 向量库相关\n'
     printf '5. 安装短命令 ob\n'
+    printf '6. 从原版 Ombre-Brain 迁移\n'
     printf '0. 退出\n'
-    if ! read -r -p '输入（0-5）：' choice; then
+    if ! read -r -p '输入（0-6）：' choice; then
       printf '\n'
       exit 0
     fi
@@ -1110,8 +1360,9 @@ main_menu() {
       3) run_doctor; pause ;;
       4) vector_menu ;;
       5) install_shortcut; pause ;;
+      6) migration_menu ;;
       0) exit 0 ;;
-      *) printf '请输入 0-5。\n' ;;
+      *) printf '请输入 0-6。\n' ;;
     esac
   done
 }

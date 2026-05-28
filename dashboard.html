@@ -2290,6 +2290,7 @@ var networkState = {
   edgeMap: {},
   view: { x: 0, y: 0 },
   drag: null,
+  linkedMotion: {},
   selectedId: '',
   animationFrame: 0,
   popoverToken: 0,
@@ -2333,6 +2334,7 @@ function initNetworkCanvas(canvas, ctx, W, H, data) {
   networkState.edgeMap = buildNetworkEdgeMap(networkState.data.edges || []);
   networkState.view = { x: 0, y: 0 };
   networkState.drag = null;
+  networkState.linkedMotion = {};
   networkState.selectedId = '';
   bindNetworkCanvas(canvas);
   startNetworkAnimation();
@@ -2429,6 +2431,7 @@ function drawNetworkFrame(time) {
   var view = networkState.view;
   var W = networkState.width, H = networkState.height;
   if (!ctx) return;
+  updateNetworkLinkedMotion();
 
   ctx.fillStyle = '#FDFCF0';
   ctx.fillRect(0, 0, W, H);
@@ -2524,6 +2527,25 @@ function networkActiveNodeId() {
   return networkState.selectedId;
 }
 
+function updateNetworkLinkedMotion() {
+  var motion = networkState.linkedMotion || {};
+  Object.keys(motion).forEach(function(id) {
+    var item = motion[id];
+    var p = networkState.positions[id];
+    if (!item || !p) {
+      delete motion[id];
+      return;
+    }
+    p.x += (item.targetX - p.x) * 0.16;
+    p.y += (item.targetY - p.y) * 0.16;
+    if (Math.abs(item.targetX - p.x) < 0.2 && Math.abs(item.targetY - p.y) < 0.2) {
+      p.x = item.targetX;
+      p.y = item.targetY;
+      delete motion[id];
+    }
+  });
+}
+
 function bindNetworkCanvas(canvas) {
   if (canvas.__ombreNetworkBound) return;
   canvas.__ombreNetworkBound = true;
@@ -2616,10 +2638,10 @@ function handleNetworkPointerMove(event) {
       p.y = drag.nodeY + dy;
     }
     drag.linkedNodes.forEach(function(item) {
-      var linked = networkState.positions[item.id];
-      if (!linked) return;
-      linked.x = item.x + dx * 0.65;
-      linked.y = item.y + dy * 0.65;
+      networkState.linkedMotion[item.id] = {
+        targetX: item.x + dx * 0.55,
+        targetY: item.y + dy * 0.55,
+      };
     });
   } else {
     networkState.view.x = drag.viewX + dx;

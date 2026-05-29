@@ -145,6 +145,20 @@ reranker:
   #   OMBRE_RERANKER_MODEL
   #   OMBRE_RERANKER_ENABLED
 
+# --- Recall diagnostics / 召回诊断 ---
+# Admin-only append log for recall debugging. It records query, candidate ids,
+# short previews, scores, gate reasons, rerank score, and final selected ids.
+# 管理员调试用追加日志；默认关闭，避免把 query 和候选记忆写入磁盘。
+recall_diagnostics:
+  enabled: false
+  path: ""                         # default: state_dir/recall_diagnostics.jsonl
+  max_candidates: 20
+  max_text_chars: 220
+  # Env vars / 环境变量:
+  #   OMBRE_RECALL_DIAGNOSTICS_ENABLED
+  #   OMBRE_RECALL_DIAGNOSTICS_PATH
+  #   OMBRE_RECALL_DIAGNOSTICS_MAX_CANDIDATES
+
 # --- Gateway / 网关注入配置 ---
 # Exposes an OpenAI-compatible /v1/chat/completions endpoint that injects
 # Core Memory + Recent Context + Recalled Memory before forwarding upstream

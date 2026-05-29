@@ -83,11 +83,14 @@ from memory_relevance import (
     memory_relevance_options_from_config,
     query_has_facet,
     recall_rank,
+    relevance_decision,
     relevance_multiplier,
 )
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
 from reflection_engine import ReflectionEngine
+from recall_diagnostics import RecallDiagnosticsLogger
+from reranker_engine import RerankerEngine
 from utils import (
     bucket_text_for_embedding,
     count_tokens_approx,
@@ -109,6 +112,8 @@ bucket_mgr = BucketManager(config)                  # Bucket manager / 记忆桶
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 embedding_engine = EmbeddingEngine(config)            # Embedding engine / 向量化引擎
+reranker_engine = RerankerEngine(config)              # Reranker / 召回重排序
+recall_diagnostics = RecallDiagnosticsLogger(config)  # Recall diagnostics / 召回诊断
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
 persona_engine = PersonaStateEngine(config)           # Persona state engine / 人格状态引擎
 memory_edge_store = MemoryEdgeStore(config)            # Explicit memory relationship edges / 显式记忆关系边
@@ -1713,6 +1718,220 @@ def _apply_recall_relevance_gate(query: str, candidates: list[dict]) -> list[dic
     return filtered
 
 
+async def _rerank_breath_moment_candidates(query: str, candidates: list[dict]) -> list[dict]:
+    if not candidates or not getattr(reranker_engine, "enabled", False):
+        return candidates
+    candidate_limit = min(
+        len(candidates),
+        max(1, int(getattr(reranker_engine, "candidate_limit", 20) or 20)),
+    )
+    head = candidates[:candidate_limit]
+    tail = candidates[candidate_limit:]
+    documents = [_moment_rerank_document(moment) for moment in head]
+    results = await reranker_engine.rerank(query, documents, top_n=len(head))
+    if not results:
+        return candidates
+
+    by_index = {result.index: result.score for result in results}
+    weight = max(0.0, min(1.0, float(getattr(reranker_engine, "score_weight", 0.65))))
+    reranked = []
+    for index, moment in enumerate(head):
+        item = dict(moment)
+        rerank_score = by_index.get(index)
+        try:
+            base_score = float(item.get("score", 0.0))
+        except (TypeError, ValueError):
+            base_score = 0.0
+        if rerank_score is None:
+            item["rerank_score"] = None
+            item["combined_score"] = base_score
+        else:
+            item["rerank_score"] = round(rerank_score, 4)
+            item["combined_score"] = round(base_score * (1.0 - weight) + rerank_score * weight, 4)
+            item["score"] = item["combined_score"]
+        reranked.append(item)
+    reranked.sort(
+        key=lambda item: (
+            item.get("rerank_score") is not None,
+            item.get("combined_score", item.get("score", 0.0)),
+            item.get("score", 0.0),
+        ),
+        reverse=True,
+    )
+    return reranked + tail
+
+
+def _moment_rerank_document(moment: dict) -> str:
+    meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+    fields = [
+        f"title: {meta.get('bucket_name') or moment.get('bucket_id') or ''}",
+        f"section: {moment.get('section') or ''}",
+        f"domain: {' '.join(str(item) for item in meta.get('bucket_domain', []) or [])}",
+        f"tags: {' '.join(str(item) for item in meta.get('bucket_tags', []) or [])}",
+        f"text: {moment.get('text') or ''}",
+    ]
+    return "\n".join(fields)[:4000]
+
+
+def _upsert_breath_seed_diagnostic(
+    seed_diagnostics: dict[str, dict],
+    bucket: dict,
+    source: str,
+    *,
+    bucket_search_score: float | None = None,
+    embedding_score: float | None = None,
+) -> None:
+    bucket_id = str(bucket.get("id") or "").strip()
+    if not bucket_id:
+        return
+    meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+    item = seed_diagnostics.setdefault(
+        bucket_id,
+        {
+            "bucket_id": bucket_id,
+            "bucket_name": meta.get("name") or bucket_id,
+            "sources": [],
+        },
+    )
+    if source and source not in item["sources"]:
+        item["sources"].append(source)
+    if bucket_search_score is not None:
+        safe_score = _safe_float(bucket_search_score)
+        if safe_score is not None:
+            item["bucket_search_score"] = safe_score
+            item["keyword_score"] = round(_score_to_unit(safe_score), 4)
+    if embedding_score is not None:
+        safe_embedding_score = _safe_float(embedding_score)
+        if safe_embedding_score is not None:
+            item["embedding_score"] = safe_embedding_score
+
+
+def _score_to_unit(score: float) -> float:
+    try:
+        number = float(score)
+    except (TypeError, ValueError):
+        return 0.0
+    if number > 1:
+        number = number / 100.0
+    return max(0.0, min(1.0, number))
+
+
+def _write_breath_recall_diagnostics(
+    *,
+    query: str,
+    seed_diagnostics: dict[str, dict],
+    pre_gate_candidates: list[dict],
+    gated_candidates: list[dict],
+    reranked_candidates: list[dict],
+    returned_moments: list[dict],
+    displayed_moment_ids: list[str],
+    secondary_moment_ids: list[str],
+    related_source_bucket_ids: list[str],
+    related_included: bool,
+    drift_included: bool,
+    dream_included: bool,
+    response_sections: list[str],
+) -> None:
+    if not getattr(recall_diagnostics, "enabled", False):
+        return
+
+    gated_by_id = _moment_index(gated_candidates)
+    reranked_by_id = _moment_index(reranked_candidates)
+    gated_rank = _moment_rank(gated_candidates)
+    reranked_rank = _moment_rank(reranked_candidates)
+    returned_ids = [str(moment.get("moment_id") or "") for moment in returned_moments if moment.get("moment_id")]
+    returned_set = set(returned_ids)
+    displayed_set = set(displayed_moment_ids)
+    secondary_set = set(secondary_moment_ids)
+    options = _recall_relevance_options()
+    max_candidates = max(1, int(getattr(recall_diagnostics, "max_candidates", 20) or 20))
+
+    candidates = []
+    for index, moment in enumerate(pre_gate_candidates[:max_candidates]):
+        moment_id = str(moment.get("moment_id") or "")
+        bucket_id = str(moment.get("bucket_id") or "")
+        decision = relevance_decision(query, moment, options)
+        gated = gated_by_id.get(moment_id)
+        reranked = reranked_by_id.get(moment_id)
+        final = reranked or gated
+        seed = seed_diagnostics.get(bucket_id, {})
+        candidate = {
+            "pre_rank": index,
+            "gate_rank": gated_rank.get(moment_id),
+            "final_rank": reranked_rank.get(moment_id),
+            "bucket_id": bucket_id,
+            "bucket_name": _moment_bucket_title(moment),
+            "moment_id": moment_id,
+            "section": moment.get("section"),
+            "sources": seed.get("sources", []),
+            "bucket_search_score": seed.get("bucket_search_score"),
+            "keyword_score": seed.get("keyword_score"),
+            "embedding_score": seed.get("embedding_score"),
+            "score_before_gate": _safe_float(moment.get("score")),
+            "score_after_gate": _safe_float(gated.get("score")) if gated else None,
+            "rerank_score": _safe_float(final.get("rerank_score")) if final else None,
+            "combined_score": _safe_float(final.get("combined_score")) if final else None,
+            "gate": "filtered" if decision.multiplier <= 0 else "kept",
+            "gate_multiplier": round(float(decision.multiplier), 4),
+            "gate_reasons": list(decision.reasons),
+            "selected_returned": moment_id in returned_set,
+            "selected_direct": moment_id in displayed_set,
+            "selected_secondary": moment_id in secondary_set,
+            "text_preview": _diagnostic_text_preview(moment),
+        }
+        candidates.append(candidate)
+
+    recall_diagnostics.write(
+        {
+            "source": "breath",
+            "mode": "search",
+            "query": str(query or ""),
+            "seed_buckets": list(seed_diagnostics.values())[:max_candidates],
+            "candidates": candidates,
+            "final": {
+                "returned_moment_ids": returned_ids,
+                "direct_moment_ids": displayed_moment_ids,
+                "secondary_moment_ids": secondary_moment_ids,
+                "related_source_bucket_ids": related_source_bucket_ids,
+                "related_included": related_included,
+                "drift_included": drift_included,
+                "dream_included": dream_included,
+                "response_sections": response_sections,
+            },
+        }
+    )
+
+
+def _moment_index(moments: list[dict]) -> dict[str, dict]:
+    return {
+        str(moment.get("moment_id")): moment
+        for moment in moments
+        if moment.get("moment_id")
+    }
+
+
+def _moment_rank(moments: list[dict]) -> dict[str, int]:
+    return {
+        str(moment.get("moment_id")): index
+        for index, moment in enumerate(moments)
+        if moment.get("moment_id")
+    }
+
+
+def _safe_float(value) -> float | None:
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _diagnostic_text_preview(moment: dict) -> str:
+    max_chars = max(0, int(getattr(recall_diagnostics, "max_text_chars", 220) or 0))
+    if max_chars <= 0:
+        return ""
+    return _moment_text(moment, max_chars)
+
+
 def _query_wants_body_chain(query: str) -> bool:
     return query_has_facet(query, "embodiment", _recall_relevance_options())
 
@@ -2418,12 +2637,23 @@ async def breath(
         logger.error(f"Search failed / 检索失败: {e}")
         return "检索过程出错，请稍后重试。"
 
+    seed_diagnostics: dict[str, dict] = {}
+    for bucket in matches:
+        _upsert_breath_seed_diagnostic(
+            seed_diagnostics,
+            bucket,
+            "keyword",
+            bucket_search_score=bucket.get("score"),
+        )
+
     # --- Vector similarity channel: find semantically related buckets ---
     # --- 向量相似度通道：找到语义相关的桶 ---
     matched_ids = {b["id"] for b in matches}
     try:
         vector_results = await embedding_engine.search_similar(query, top_k=max(max_results, 20))
         for bucket_id, sim_score in vector_results:
+            if bucket_id in seed_diagnostics:
+                seed_diagnostics[bucket_id]["embedding_score"] = round(float(sim_score), 4)
             if bucket_id not in matched_ids and sim_score > 0.5:
                 bucket = await bucket_mgr.get(bucket_id)
                 if bucket:
@@ -2431,6 +2661,12 @@ async def breath(
                         continue
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
+                    _upsert_breath_seed_diagnostic(
+                        seed_diagnostics,
+                        bucket,
+                        "vector",
+                        embedding_score=sim_score,
+                    )
                     matches.append(bucket)
                     matched_ids.add(bucket_id)
     except Exception as e:
@@ -2451,13 +2687,17 @@ async def breath(
         bucket_boosts=bucket_boosts,
     )
     moment_candidates = _recallable_moments(moment_candidates)
-    moment_candidates = _apply_recall_relevance_gate(query, moment_candidates)
+    pre_gate_moment_candidates = list(moment_candidates)
+    gated_moment_candidates = _apply_recall_relevance_gate(query, moment_candidates)
+    moment_candidates = gated_moment_candidates
+    moment_candidates = await _rerank_breath_moment_candidates(query, moment_candidates)
 
     direct_results = []
     token_used = 0
     returned_moments = moment_candidates[:max_results]
     direct_display_limit = 1 if include_related else max_results
     displayed_bucket_ids: set[str] = set()
+    displayed_moment_ids: list[str] = []
     for moment in returned_moments:
         if len(direct_results) >= direct_display_limit:
             break
@@ -2475,6 +2715,7 @@ async def breath(
                 break
             await bucket_mgr.touch(bucket_id)
             displayed_bucket_ids.add(bucket_id)
+            displayed_moment_ids.append(str(moment.get("moment_id") or ""))
             direct_results.append(entry)
             token_used += entry_tokens
         except Exception as e:
@@ -2482,6 +2723,8 @@ async def breath(
             continue
 
     related_entry = ""
+    secondary_moment_ids: list[str] = []
+    related_source_bucket_ids: list[str] = []
     if include_related and returned_moments:
         related_header = "=== 联想浮现 ===\n"
         related_budget = max_tokens - token_used - count_tokens_approx(related_header)
@@ -2500,6 +2743,7 @@ async def breath(
             if block_tokens > related_budget:
                 break
             related_parts.append(block)
+            secondary_moment_ids.append(str(moment.get("moment_id") or ""))
             related_budget -= block_tokens
 
         related_source_buckets = []
@@ -2510,6 +2754,7 @@ async def breath(
             if not bucket or bucket_id in seen_source_bucket_ids:
                 continue
             related_source_buckets.append(bucket)
+            related_source_bucket_ids.append(bucket_id)
             seen_source_bucket_ids.add(bucket_id)
 
         related_block = await _build_mcp_diffused_memory_block(
@@ -2574,12 +2819,34 @@ async def breath(
     )
 
     response_parts = []
+    response_sections = []
     if direct_results:
         response_parts.append("=== 直接命中记忆 ===\n" + "\n---\n".join(direct_results))
+        response_sections.append("direct")
     if related_entry:
         response_parts.append(related_entry)
+        response_sections.append("related")
     if drift_entry:
         response_parts.append(drift_entry)
+        response_sections.append("drift")
+    if dream_block:
+        response_sections.append("dream")
+
+    _write_breath_recall_diagnostics(
+        query=query,
+        seed_diagnostics=seed_diagnostics,
+        pre_gate_candidates=pre_gate_moment_candidates,
+        gated_candidates=gated_moment_candidates,
+        reranked_candidates=moment_candidates,
+        returned_moments=returned_moments,
+        displayed_moment_ids=displayed_moment_ids,
+        secondary_moment_ids=secondary_moment_ids,
+        related_source_bucket_ids=related_source_bucket_ids,
+        related_included=bool(related_entry),
+        drift_included=bool(drift_entry),
+        dream_included=bool(dream_block),
+        response_sections=response_sections,
+    )
 
     if not response_parts:
         return dream_block or "未找到相关记忆。"

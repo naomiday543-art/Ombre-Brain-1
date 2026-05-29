@@ -1,9 +1,11 @@
 import pytest
 import json
+from types import SimpleNamespace
 
 from memory_edges import MemoryEdgeStore
 from memory_moments import MemoryMomentStore
 from memory_nodes import MemoryNodeStore
+from recall_diagnostics import RecallDiagnosticsLogger
 
 
 class DummyDecayEngine:
@@ -37,6 +39,36 @@ class JsonDehydrator:
 class DummyEmbeddingEngine:
     async def search_similar(self, query: str, top_k: int = 10) -> list[tuple[str, float]]:
         return []
+
+
+class DummyRerankerEngine:
+    def __init__(
+        self,
+        score_by_text: dict[str, float] | None = None,
+        enabled: bool = False,
+        return_empty: bool = False,
+    ):
+        self.score_by_text = score_by_text or {}
+        self.enabled = enabled
+        self.return_empty = return_empty
+        self.candidate_limit = 20
+        self.score_weight = 0.65
+        self.calls = []
+
+    async def rerank(self, query: str, documents: list[str], top_n: int | None = None):
+        self.calls.append({"query": query, "documents": documents, "top_n": top_n})
+        if self.return_empty:
+            return []
+        results = []
+        for index, document in enumerate(documents):
+            score = 0.0
+            for needle, value in self.score_by_text.items():
+                if needle in document:
+                    score = float(value)
+                    break
+            results.append(SimpleNamespace(index=index, score=score))
+        results.sort(key=lambda item: item.score, reverse=True)
+        return results[:top_n] if top_n else results
 
 
 class FakeBucketManager:
@@ -130,12 +162,27 @@ def patch_breath(monkeypatch, tmp_path):
         search_ids: list[str] | None = None,
         edges: list[dict] | None = None,
         token_counter=None,
+        reranker_engine=None,
+        recall_diagnostics=None,
     ) -> FakeBucketManager:
         bucket_mgr = FakeBucketManager(buckets, search_ids=search_ids)
         monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
         monkeypatch.setattr(server, "decay_engine", DummyDecayEngine())
         monkeypatch.setattr(server, "dehydrator", DummyDehydrator())
         monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+        monkeypatch.setattr(server, "reranker_engine", reranker_engine or DummyRerankerEngine())
+        monkeypatch.setattr(
+            server,
+            "recall_diagnostics",
+            recall_diagnostics
+            or RecallDiagnosticsLogger(
+                {
+                    "state_dir": str(tmp_path / "state"),
+                    "buckets_dir": str(tmp_path / "buckets"),
+                    "recall_diagnostics": {"enabled": False},
+                }
+            ),
+        )
         monkeypatch.setattr(server, "memory_edge_store", _edge_store(tmp_path, edges))
         monkeypatch.setattr(
             server,
@@ -436,6 +483,64 @@ async def test_search_limits_direct_hits_to_max_results(patch_breath):
 
 
 @pytest.mark.asyncio
+async def test_search_reranker_reorders_breath_moment_candidates(patch_breath):
+    import server
+
+    reranker = DummyRerankerEngine(
+        enabled=True,
+        score_by_text={
+            "Disney birthday trip": 0.98,
+            "generic project note": 0.05,
+        },
+    )
+    patch_breath(
+        [
+            _bucket("N", "generic project note: keyword seed drift.", importance=10),
+            _bucket("T", "Disney birthday trip: remembered the exact itinerary.", importance=1),
+        ],
+        search_ids=["N", "T"],
+        reranker_engine=reranker,
+    )
+
+    result = await server.breath(
+        query="Disney",
+        max_results=1,
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert reranker.calls
+    assert "Disney birthday trip" in result
+    assert "generic project note" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_keeps_order_when_breath_reranker_returns_empty(patch_breath):
+    import server
+
+    reranker = DummyRerankerEngine(enabled=True, return_empty=True)
+    patch_breath(
+        [
+            _bucket("A", "A first direct hit.", importance=10),
+            _bucket("B", "B second direct hit.", importance=9),
+        ],
+        search_ids=["A", "B"],
+        reranker_engine=reranker,
+    )
+
+    result = await server.breath(
+        query="direct hit",
+        max_results=1,
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert reranker.calls
+    assert "A first direct hit" in result
+    assert "B second direct hit" not in result
+
+
+@pytest.mark.asyncio
 async def test_search_displays_one_direct_hit_but_diffuses_from_seed_set(patch_breath):
     import server
 
@@ -557,6 +662,51 @@ async def test_relationship_identity_query_does_not_release_intimacy_candidate(p
 
     assert "人机恋关系身份" in result
     assert "亲密身体记忆" not in result
+
+
+@pytest.mark.asyncio
+async def test_search_writes_recall_diagnostics_jsonl(patch_breath, tmp_path):
+    import server
+
+    log_path = tmp_path / "state" / "recall_diagnostics.jsonl"
+    diagnostics = RecallDiagnosticsLogger(
+        {
+            "state_dir": str(tmp_path / "state"),
+            "buckets_dir": str(tmp_path / "buckets"),
+            "recall_diagnostics": {
+                "enabled": True,
+                "path": str(log_path),
+                "max_candidates": 10,
+                "max_text_chars": 80,
+            },
+        }
+    )
+    patch_breath(
+        [
+            _bucket("R", "人机恋关系身份：AI relationship 不是工具替代品。", importance=6),
+            _bucket("I", "亲密身体记忆：private sexual intimacy context。", importance=10),
+        ],
+        search_ids=["I", "R"],
+        recall_diagnostics=diagnostics,
+    )
+
+    result = await server.breath(
+        query="人机恋 AI relationship",
+        max_results=3,
+        max_tokens=500,
+        include_related=False,
+    )
+
+    assert "人机恋关系身份" in result
+    event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["schema"] == "ombre.recall_diagnostics.v1"
+    assert event["source"] == "breath"
+    assert event["query"] == "人机恋 AI relationship"
+    candidates = {item["bucket_id"]: item for item in event["candidates"]}
+    assert candidates["R"]["selected_direct"] is True
+    assert candidates["I"]["gate"] == "filtered"
+    assert "relationship_identity_vs_intimacy" in candidates["I"]["gate_reasons"]
+    assert event["final"]["direct_moment_ids"]
 
 
 @pytest.mark.asyncio

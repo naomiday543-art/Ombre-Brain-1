@@ -73,6 +73,12 @@ def load_config(config_path: str = None) -> dict:
             "score_weight": 0.65,
             "timeout_seconds": 12,
         },
+        "recall_diagnostics": {
+            "enabled": False,
+            "path": "",
+            "max_candidates": 20,
+            "max_text_chars": 220,
+        },
         "decay": {
             "lambda": 0.05,
             "threshold": 0.3,
@@ -378,6 +384,29 @@ def load_config(config_path: str = None) -> dict:
             "yes",
             "on",
         )
+
+    env_recall_diagnostics_enabled = os.environ.get("OMBRE_RECALL_DIAGNOSTICS_ENABLED", "")
+    if env_recall_diagnostics_enabled:
+        config.setdefault("recall_diagnostics", {})["enabled"] = env_recall_diagnostics_enabled.lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+
+    env_recall_diagnostics_path = os.environ.get("OMBRE_RECALL_DIAGNOSTICS_PATH", "")
+    if env_recall_diagnostics_path:
+        config.setdefault("recall_diagnostics", {})["path"] = env_recall_diagnostics_path
+
+    env_recall_diagnostics_max_candidates = os.environ.get("OMBRE_RECALL_DIAGNOSTICS_MAX_CANDIDATES", "")
+    if env_recall_diagnostics_max_candidates:
+        try:
+            config.setdefault("recall_diagnostics", {})["max_candidates"] = int(env_recall_diagnostics_max_candidates)
+        except ValueError:
+            logging.warning(
+                "Invalid OMBRE_RECALL_DIAGNOSTICS_MAX_CANDIDATES / "
+                f"无效的 OMBRE_RECALL_DIAGNOSTICS_MAX_CANDIDATES: {env_recall_diagnostics_max_candidates}"
+            )
 
     env_transport = os.environ.get("OMBRE_TRANSPORT", "")
     if env_transport:

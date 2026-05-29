@@ -571,6 +571,8 @@ OAuth Client ID/Secret: 使用 OMBRE_CHATGPT_OAUTH_CLIENT_ID / OMBRE_CHATGPT_OAU
 Scopes: 留空
 ```
 
+Claude 网页远程 connector 的 Advanced settings 里，`OAuth Client ID` 填 `.env` 中 `OMBRE_CHATGPT_OAUTH_CLIENT_ID` 的值，`OAuth Client Secret` 填 `.env` 中 `OMBRE_CHATGPT_OAUTH_CLIENT_SECRET` 的值；不要填变量名本身。
+
 默认允许 ChatGPT connector 回调和 Claude hosted connector 回调。Claude 网页远程 connector 的回调地址是 `https://claude.ai/api/mcp/auth_callback`；如需覆盖，设置 `OMBRE_CHATGPT_OAUTH_REDIRECT_URIS` 为逗号分隔的精确回调地址列表。
 
 ### Dashboard 登录

@@ -2235,6 +2235,100 @@ def test_gateway_diffused_memory_uses_summary_only_for_moments(
     assert "扩散目标原文-绝对不能出现 ABC123" not in injected
 
 
+def test_gateway_explicit_topic_diffusion_stays_on_topic(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    from memory_edges import MemoryEdgeStore
+
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=1200,
+        inject_total_budget=2200,
+        current_inner_state_interval_rounds=0,
+        inject_max_cards=1,
+    )
+    cfg["memory_diffusion"] = {"max_hops": 1, "min_activation": 0.0, "top_k": 4}
+    ff14_id = _create_bucket(
+        bucket_mgr,
+        content="FF14进度与计划：小雨目前处于6.x版本，写完论文后继续跑主线。",
+        name="FF14进度与计划",
+        hours_ago=24,
+        importance=10,
+        domain=["游戏"],
+    )
+    ff14_related_id = _create_bucket(
+        bucket_mgr,
+        content="希腊神话与FF14：Godless Realms主题和FF14后续版本很契合。",
+        name="希腊神话与FF14",
+        hours_ago=48,
+        importance=9,
+        domain=["游戏"],
+    )
+    dark_story_id = _create_bucket(
+        bucket_mgr,
+        content="喜欢暗色故事：偏好阴郁复杂的故事气质。",
+        name="喜欢暗色故事",
+        hours_ago=12,
+        importance=9,
+        domain=["兴趣"],
+    )
+    hardware_id = _create_bucket(
+        bucket_mgr,
+        content="双向触碰硬件与微信桥进度：ESP32 MPR121 触摸模块调试。",
+        name="双向触碰硬件与微信桥进度",
+        hours_ago=6,
+        importance=9,
+        domain=["硬件"],
+    )
+    intimacy_id = _create_bucket(
+        bucket_mgr,
+        content="称呼偏好：亲密关系里的角色和调情模式。",
+        name="称呼偏好",
+        hours_ago=5,
+        importance=9,
+        domain=["恋爱"],
+    )
+    edge_store = MemoryEdgeStore(cfg)
+    edge_store.add_edge(ff14_id, ff14_related_id, "supports", confidence=1.0, reason="same FF14 topic")
+    edge_store.add_edge(ff14_id, dark_story_id, "supports", confidence=1.0, reason="weak preference only")
+    edge_store.add_edge(hardware_id, intimacy_id, "supports", confidence=1.0, reason="off-topic chain")
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[
+            (ff14_id, 0.99),
+            (ff14_related_id, 0.96),
+            (hardware_id, 0.95),
+            (intimacy_id, 0.94),
+            (dark_story_id, 0.93),
+        ],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-ff14-topic-gate",
+            },
+            json={"messages": [{"role": "user", "content": "FF14 进度 偏好"}]},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "FF14进度与计划" in injected
+    assert "希腊神话与FF14" in injected
+    assert "喜欢暗色故事" not in injected
+    assert "双向触碰硬件" not in injected
+    assert "称呼偏好" not in injected
+
+
 def test_gateway_reranker_reorders_dynamic_memory_candidates(
     monkeypatch,
     test_config,

@@ -35,6 +35,7 @@ from memory_edges import MemoryEdgeStore
 from memory_moments import MemoryMomentStore
 from memory_relevance import (
     active_facets,
+    content_terms_for_query,
     facets_for_node,
     facets_for_text,
     memory_relevance_options_from_config,
@@ -97,6 +98,31 @@ MOMENT_SECTION_LABELS = {
 }
 MOMENT_TEMPERATURE_SECTIONS = {"affect_anchor", "favorite_reason", "comment"}
 PROFILE_CONTEXT_SECTIONS = ("evidence_context", "context", "reflection", "feeling", "followup", "comment")
+WEAK_RECALL_TOPIC_TERMS = {
+    "进度",
+    "偏好",
+    "情况",
+    "状态",
+    "事情",
+    "东西",
+    "内容",
+    "相关",
+    "记忆",
+    "回忆",
+    "总结",
+    "记录",
+    "查询",
+    "搜索",
+    "最近",
+    "之前",
+    "过去",
+    "现在",
+    "当前",
+    "安排",
+    "计划",
+    "问题",
+    "目标",
+}
 
 
 class GatewayService:
@@ -2625,6 +2651,12 @@ class GatewayService:
                     moment = replacement
                     if moment.get("moment_id") in seen_moment_ids:
                         continue
+            if (
+                self._query_requires_topic_evidence(query_text)
+                and not self._query_wants_body_chain(query_text)
+                and not self._moment_has_query_topic_evidence(query_text, moment)
+            ):
+                continue
             path = self._select_diffusion_path_for_context(hit.paths, moment_map, allow_caution_paths)
             if path is None:
                 continue
@@ -2668,12 +2700,104 @@ class GatewayService:
                 continue
             if should_suppress_context_candidate(query, moment, self.relevance_options):
                 continue
+            if (
+                self._query_requires_topic_evidence(query)
+                and not self._query_wants_body_chain(query)
+                and not self._moment_has_query_topic_evidence(query, moment)
+            ):
+                continue
             hidden.append(moment)
             seen.add(bucket_id)
         if self._query_wants_body_chain(query):
             hidden.sort(key=lambda moment: self._recall_rank(query, moment))
             return hidden[:5]
         return hidden[: max(0, min(2, self.inject_max_cards))]
+
+    def _query_requires_topic_evidence(self, query: str) -> bool:
+        return self._query_has_explicit_entity_marker(query)
+
+    @staticmethod
+    def _query_has_explicit_entity_marker(query: str) -> bool:
+        text = str(query or "")
+        if re.search(r"\b[A-Z0-9][A-Z0-9._:/-]{2,}\b", text):
+            return True
+        if re.search(r"\b0x[0-9a-fA-F]+\b", text):
+            return True
+        if re.search(r"\b[A-Za-z]+/[A-Za-z0-9._-]+\b", text):
+            return True
+        if re.search(r"\d", text):
+            return True
+        return False
+
+    def _moment_has_query_topic_evidence(self, query: str, moment: dict) -> bool:
+        terms = self._specific_query_terms(query)
+        if not terms:
+            return False
+        meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+        fields = " ".join(
+            [
+                str(moment.get("text") or ""),
+                str(meta.get("annotation_summary") or ""),
+                self._evidence_spans_text(meta.get("evidence_spans")),
+                str(meta.get("bucket_name") or ""),
+                " ".join(str(tag) for tag in (meta.get("bucket_tags") or []) if str(tag).strip()),
+                " ".join(str(item) for item in (meta.get("bucket_domain") or []) if str(item).strip()),
+            ]
+        ).lower()
+        return any(term.lower() in fields for term in terms)
+
+    def _bucket_has_query_topic_evidence(self, query: str, bucket: dict) -> bool:
+        terms = self._specific_query_terms(query)
+        if not terms:
+            return False
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        fields = " ".join(
+            [
+                self._bucket_text_with_comments(bucket),
+                str(meta.get("name") or ""),
+                " ".join(str(tag) for tag in (meta.get("tags") or []) if str(tag).strip()),
+                " ".join(str(item) for item in (meta.get("domain") or []) if str(item).strip()),
+            ]
+        ).lower()
+        return any(term.lower() in fields for term in terms)
+
+    def _specific_query_terms(self, query: str) -> list[str]:
+        raw = str(query or "")
+        terms = list(content_terms_for_query(raw, self.relevance_options))
+        terms.extend(re.findall(r"\d+(?:\.\d+)+", raw))
+        terms.extend(re.findall(r"[A-Za-z]+[A-Za-z0-9_.:-]*\d[A-Za-z0-9_.:-]*", raw))
+        kept = []
+        seen = set()
+        for term in terms:
+            cleaned = str(term or "").strip()
+            if not cleaned:
+                continue
+            key = cleaned.lower()
+            if key in seen:
+                continue
+            if key in WEAK_RECALL_TOPIC_TERMS:
+                continue
+            if re.fullmatch(r"[a-z0-9_.:-]+", key) and len(key) < 3 and not re.fullmatch(r"\d+(?:\.\d+)+", key):
+                continue
+            if re.fullmatch(r"[\u4e00-\u9fff]+", cleaned) and len(cleaned) < 2:
+                continue
+            seen.add(key)
+            kept.append(cleaned)
+        return kept
+
+    @staticmethod
+    def _evidence_spans_text(value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+        parts = []
+        for item in value:
+            if isinstance(item, dict):
+                text = str(item.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+            elif isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+        return " ".join(parts)
 
     def _allows_caution_diffusion(self, query: str, context_mode: str) -> bool:
         if str(context_mode or "").strip() in {"reflective_repair", "conflict_repair"}:
@@ -2957,6 +3081,12 @@ class GatewayService:
             target_id = hit.bucket_id
             target = bucket_map.get(target_id)
             if not target:
+                continue
+            if (
+                self._query_requires_topic_evidence(query_text)
+                and not self._query_wants_body_chain(query_text)
+                and not self._bucket_has_query_topic_evidence(query_text, target)
+            ):
                 continue
             raw_summary = await self._summarize_bucket(target)
             summary = self._compact_diffused_summary(target, raw_summary)

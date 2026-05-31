@@ -2001,8 +2001,8 @@ def test_gateway_accepts_timezone_aware_bucket_timestamps(monkeypatch, test_conf
                 "Authorization": "Bearer gateway-secret",
                 "X-Ombre-Session-Id": "sess-aware-time",
             },
-            json={"messages": [{"role": "user", "content": "看看最近发生了什么"}]},
-    )
+            json={"messages": [{"role": "user", "content": "看看最近的时区时间桶"}]},
+        )
 
     assert response.status_code == 200
     injected = _joined_message_content(captured[0]["json"]["messages"])
@@ -2442,7 +2442,7 @@ def test_gateway_recent_context_stays_on_explicit_topic(
     assert "双向触碰硬件" not in injected
 
 
-def test_gateway_recent_context_keeps_recent_items_for_vague_query(
+def test_gateway_auto_vague_query_suppresses_recent_and_dynamic_memory(
     monkeypatch,
     test_config,
     bucket_mgr,
@@ -2450,14 +2450,15 @@ def test_gateway_recent_context_keeps_recent_items_for_vague_query(
     cfg = _gateway_config(
         test_config,
         core_memory_budget=0,
-        recalled_memory_budget=0,
-        related_memory_budget=0,
+        recent_context_budget=800,
+        recalled_memory_budget=500,
+        related_memory_budget=800,
         inject_total_budget=1800,
         current_inner_state_interval_rounds=0,
         relationship_weather_interval_rounds=0,
         favorite_memory_interval_rounds=0,
     )
-    _create_bucket(
+    bucket_id = _create_bucket(
         bucket_mgr,
         content="厄科与纳西索斯：Haven讲过回声和水仙的神话。",
         name="厄科与纳西索斯",
@@ -2466,7 +2467,12 @@ def test_gateway_recent_context_keeps_recent_items_for_vague_query(
         domain=["阅读"],
     )
 
-    app, _, _, captured = _build_service(monkeypatch, cfg, bucket_mgr)
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(bucket_id, 0.95)],
+    )
 
     with TestClient(app) as client:
         response = client.post(
@@ -2475,13 +2481,15 @@ def test_gateway_recent_context_keeps_recent_items_for_vague_query(
                 "Authorization": "Bearer gateway-secret",
                 "X-Ombre-Session-Id": "sess-recent-vague",
             },
-            json={"messages": [{"role": "user", "content": "最近发生了什么"}]},
+            json={"messages": [{"role": "user", "content": "这张图片的上下文我想起来了"}]},
         )
 
     assert response.status_code == 200
     injected = _joined_message_content(captured[0]["json"]["messages"])
-    assert "Recent Context" in injected
-    assert "厄科与纳西索斯" in injected
+    assert "Recent Context" not in injected
+    assert "Recalled Memory" not in injected
+    assert "Diffused Memory" not in injected
+    assert "厄科与纳西索斯" not in injected
 
 
 def test_gateway_reranker_reorders_dynamic_memory_candidates(

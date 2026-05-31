@@ -1863,6 +1863,8 @@ def _breath_moment_admission_decision(
     query: str,
     moment: dict,
     seed_diagnostics: dict[str, dict],
+    *,
+    auto: bool = False,
 ):
     seed = seed_diagnostics.get(str(moment.get("bucket_id") or ""), {})
     return _recall_policy().assess(
@@ -1871,6 +1873,7 @@ def _breath_moment_admission_decision(
         semantic_score=seed.get("embedding_score"),
         rerank_score=moment.get("rerank_score"),
         context_only=moment.get("section") in MOMENT_TEMPERATURE_SECTIONS,
+        auto=auto,
     )
 
 
@@ -2714,12 +2717,14 @@ async def breath(
     core_limit: int = 3,
     is_session_start: bool = False,
     debug: bool = False,
+    surface: str = "manual",
 ) -> str:
     """读取记忆,不写入。
     调用方式: 新对话用 breath(is_session_start=True); 查过去用 breath(query="主题词"); 只读模型感受用 breath(domain="feel"); 只读悄悄话用 breath(domain="whisper")。
     默认只从本次命中的普通记忆沿持久化 memory_edges 带一跳联想浮现; embedding 相似边只是检索/图谱参考,不是可手写的记忆关系。
     如果夜梦与当前语境共振,breath 会追加 ===== 梦境 ===== 块;梦只浮现一次。
     include_core/core_limit 控制 pinned/protected 核心准则数量; include_related=False 可关闭联想浮现块。
+    surface="auto" 用于 Gateway/Bridge 自动注入：空泛召回句不硬捞语义候选。
     """
     await decay_engine.ensure_started()
     max_results = _int_between(max_results, 20, 1, 50)
@@ -2731,6 +2736,8 @@ async def breath(
     core_limit = _int_between(core_limit, 3, 0, 20)
     is_session_start = _bool_value(is_session_start, False)
     debug = _bool_value(debug, False)
+    surface_key = str(surface or "manual").strip().lower()
+    auto_surface = surface_key in {"auto", "automatic", "bridge", "gateway"}
     domain_key = domain.strip().lower()
 
     # --- Feel/whisper retrieval: independent read-only channels ---
@@ -2763,6 +2770,8 @@ async def breath(
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
     if not query or not query.strip():
+        if auto_surface:
+            return "没有找到可靠命中。"
         try:
             all_buckets = await bucket_mgr.list_all(include_archive=False)
         except Exception as e:
@@ -2941,6 +2950,8 @@ async def breath(
     domain_filter = [d.strip() for d in domain.split(",") if d.strip()] or None
     q_valence = valence if 0 <= valence <= 1 else None
     q_arousal = arousal if 0 <= arousal <= 1 else None
+    if auto_surface and _recall_policy().is_auto_query_too_vague(query):
+        return "没有找到可靠命中。"
     search_query = recall_search_query(query, _recall_relevance_options())
 
     try:
@@ -3017,7 +3028,12 @@ async def breath(
     admitted_moments = []
     suppressed_moments = []
     for moment in moment_candidates:
-        admission = _breath_moment_admission_decision(query, moment, seed_diagnostics)
+        admission = _breath_moment_admission_decision(
+            query,
+            moment,
+            seed_diagnostics,
+            auto=auto_surface,
+        )
         item = dict(moment)
         item["_admission_reason"] = admission.reason
         if admission.admit:
@@ -3115,6 +3131,7 @@ async def breath(
         not related_entry
         and len(returned_moments) < 3
         and not recall_thresholds.get("has_explicit_entity")
+        and not auto_surface
         and max_tokens > token_used
         and random.random() < 0.4
     ):
@@ -3153,7 +3170,7 @@ async def breath(
         except Exception as e:
             logger.warning(f"Resurface failed / 久未触碰浮现失败: {e}")
 
-    dream_block = await dream_engine.surface_for_breath(
+    dream_block = "" if auto_surface else await dream_engine.surface_for_breath(
         query=query,
         valence=valence,
         arousal=arousal,

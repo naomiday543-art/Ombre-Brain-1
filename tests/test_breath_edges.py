@@ -758,6 +758,34 @@ async def test_explicit_entity_suppressed_candidates_visible_in_debug(patch_brea
 
 
 @pytest.mark.asyncio
+async def test_auto_breath_vague_query_does_not_hard_pick_semantic_candidate(patch_breath):
+    import server
+
+    bucket_mgr = patch_breath(
+        [
+            _bucket(
+                "R",
+                "具身AGI接入家居系统的三种不想睡场景。",
+                name="具身AGI家居场景",
+                score=10.0,
+            ),
+        ],
+        search_ids=["R"],
+        embedding_engine=DummyEmbeddingEngine(results=[("R", 0.95)]),
+    )
+
+    result = await server.breath(
+        query="这张图片的上下文我想起来了",
+        surface="auto",
+        max_results=5,
+        max_tokens=500,
+    )
+
+    assert result == "没有找到可靠命中。"
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
 async def test_search_does_not_diffuse_from_hidden_seed_candidates(patch_breath):
     import server
 

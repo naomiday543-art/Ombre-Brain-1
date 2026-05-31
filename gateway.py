@@ -2072,6 +2072,8 @@ class GatewayService:
         return await self._summarize_buckets(core_buckets, self.core_budget)
 
     async def _build_recent_context_block(self, all_buckets: list[dict], query_text: str = "") -> str:
+        if self._auto_query_too_vague(query_text):
+            return ""
         cutoff = datetime.now() - timedelta(hours=self.head_recent_hours)
         enforce_topic = (
             self._query_requires_topic_evidence(query_text)
@@ -2312,6 +2314,8 @@ class GatewayService:
         grouped_moments: dict[str, list[dict]],
     ) -> tuple[list[dict], list[dict], list[dict]]:
         if not query or self.inject_max_cards <= 0:
+            return [], [], []
+        if self._auto_query_too_vague(query):
             return [], [], []
 
         relevance_query = self._query_has_relevance_facet(query)
@@ -2722,6 +2726,9 @@ class GatewayService:
     def _query_requires_topic_evidence(self, query: str) -> bool:
         return self.recall_policy.requires_topic_evidence(query)
 
+    def _auto_query_too_vague(self, query: str) -> bool:
+        return self.recall_policy.is_auto_query_too_vague(query)
+
     def _moment_has_query_topic_evidence(self, query: str, moment: dict) -> bool:
         return self.recall_policy.moment_has_topic_evidence(query, moment)
 
@@ -3089,6 +3096,8 @@ class GatewayService:
     ) -> list[dict]:
         if not query or self.inject_max_cards <= 0:
             return []
+        if self._auto_query_too_vague(query):
+            return []
 
         relevance_query = self._query_has_relevance_facet(query)
         eligible = [
@@ -3245,6 +3254,7 @@ class GatewayService:
             has_topic_evidence=self._bucket_has_query_topic_evidence(query, bucket),
             semantic_score=item.get("semantic_score"),
             rerank_score=item.get("rerank_score"),
+            auto=True,
         )
         item["admission_reason"] = decision.reason
         item["recall_policy_debug"] = decision.debug
@@ -3267,6 +3277,7 @@ class GatewayService:
             has_topic_evidence=self._moment_has_query_topic_evidence(query, moment),
             rerank_score=moment.get("rerank_score"),
             context_only=moment.get("section") in MOMENT_TEMPERATURE_SECTIONS,
+            auto=True,
         )
         moment["admission_reason"] = decision.reason
         moment["recall_policy_debug"] = decision.debug

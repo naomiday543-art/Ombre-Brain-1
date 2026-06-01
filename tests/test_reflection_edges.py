@@ -354,6 +354,22 @@ async def test_reflect_daily_creates_relationship_weather_feel(test_config):
 
 
 @pytest.mark.asyncio
+async def test_reflect_daily_can_be_disabled(test_config):
+    cfg = _no_api_config(test_config)
+    cfg["reflection"]["daily_enabled"] = False
+    bucket_mgr = BucketManager(cfg)
+    engine = ReflectionEngine(cfg)
+    await _create_daily_memories(bucket_mgr)
+    now = datetime(2026, 5, 21, 20, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    result = await engine.reflect("daily", bucket_mgr, force=True, now=now)
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "daily_disabled"
+    assert await bucket_mgr.get("reflection_daily_2026-05-21") is None
+
+
+@pytest.mark.asyncio
 async def test_reflect_daily_affect_anchor_can_be_disabled(test_config):
     cfg = _no_api_config(test_config)
     cfg["reflection"]["relationship_weather_affect_anchor_enabled"] = False

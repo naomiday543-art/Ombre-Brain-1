@@ -177,6 +177,7 @@ class ReflectionEngine:
 
         self.enabled = bool(cfg.get("enabled", True))
         self.auto_enabled = bool(cfg.get("auto_enabled", True))
+        self.daily_enabled = bool(cfg.get("daily_enabled", True))
         self.enrich_on_write = bool(cfg.get("enrich_on_write", True))
         self.memory_affect_anchor_enabled = bool(cfg.get("memory_affect_anchor_enabled", True))
         self.relationship_weather_affect_anchor_enabled = bool(
@@ -335,6 +336,14 @@ class ReflectionEngine:
                 "diary_memory": {"status": "not_applicable", "reason": "reflection_disabled"},
             }
         period = self._normalize_period(period)
+        if period == "daily" and not self.daily_enabled:
+            return {
+                "status": "skipped",
+                "reason": "daily_disabled",
+                "period": period,
+                "diary": {"found": False},
+                "diary_memory": {"status": "not_applicable", "reason": "daily_disabled"},
+            }
         if period == "weekly" and not self.weekly_enabled:
             return {
                 "status": "skipped",
@@ -504,7 +513,7 @@ class ReflectionEngine:
             return []
         now_local = self._local_now()
         results = []
-        if now_local.hour >= self.daily_hour:
+        if self.daily_enabled and now_local.hour >= self.daily_hour:
             daily_date = (now_local - timedelta(days=1)).date()
             daily_target = datetime.combine(daily_date, time.max, tzinfo=self.tz)
             results.append(

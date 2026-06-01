@@ -1021,6 +1021,7 @@ async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch)
         {
             **server.config,
             "reflection": {
+                "daily_enabled": False,
                 "memory_affect_anchor_enabled": False,
                 "relationship_weather_affect_anchor_enabled": True,
             },
@@ -1032,6 +1033,7 @@ async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch)
 
     assert payload["reflection"]["memory_affect_anchor_enabled"] is False
     assert payload["reflection"]["relationship_weather_affect_anchor_enabled"] is True
+    assert payload["reflection"]["daily_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -1050,7 +1052,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     runtime_path.write_text(
         "dream:\n  model: runtime-old\n"
         "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
-        "reflection:\n  memory_affect_anchor_enabled: true\n",
+        "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     cfg = {
@@ -1069,11 +1071,13 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "skip_recent_rounds": 9,
         },
         "reflection": {
+            "daily_enabled": False,
             "memory_affect_anchor_enabled": True,
             "relationship_weather_affect_anchor_enabled": False,
         },
     }
     reflection_engine = SimpleNamespace(
+        daily_enabled=False,
         memory_affect_anchor_enabled=True,
         relationship_weather_affect_anchor_enabled=False,
     )
@@ -1094,6 +1098,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                 "dream": {"auto_enabled": False, "model": "dream-new"},
                 "gateway": {"cooldown_hours": 6, "skip_recent_rounds": 5},
                 "reflection": {
+                    "daily_enabled": True,
                     "memory_affect_anchor_enabled": False,
                     "relationship_weather_affect_anchor_enabled": True,
                 },
@@ -1111,8 +1116,10 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["dream"]["auto_enabled"] is False
     assert runtime_config["gateway"]["cooldown_hours"] == 6
     assert runtime_config["gateway"]["skip_recent_rounds"] == 5
+    assert runtime_config["reflection"]["daily_enabled"] is True
     assert runtime_config["reflection"]["memory_affect_anchor_enabled"] is False
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True
+    assert reflection_engine.daily_enabled is True
     assert reflection_engine.memory_affect_anchor_enabled is False
     assert reflection_engine.relationship_weather_affect_anchor_enabled is True
 

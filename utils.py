@@ -159,6 +159,7 @@ def load_config(config_path: str = None) -> dict:
         "reflection": {
             "enabled": True,
             "auto_enabled": True,
+            "daily_enabled": True,
             "enrich_on_write": True,
             "memory_affect_anchor_enabled": True,
             "relationship_weather_affect_anchor_enabled": True,

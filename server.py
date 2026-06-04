@@ -2034,6 +2034,53 @@ async def _format_direct_bucket(
     return _format_direct_bucket_window(bucket, moment, grouped, token_budget)
 
 
+def _direct_bucket_render_debug(
+    bucket: dict | None,
+    moment: dict | None,
+    token_budget: int,
+    *,
+    query_text: str = "",
+    direct_render_mode: str = "auto",
+) -> dict:
+    bucket = bucket or {}
+    moment = moment or {}
+    mode = _normalize_direct_render_mode(direct_render_mode)
+    original = _rendered_bucket_content(bucket)
+    header = _direct_bucket_header(bucket, moment)
+    original_block = f"{header} bucket_original\n{original}" if original else f"{header} bucket_original"
+    original_tokens = count_tokens_approx(original_block)
+    budget = max(0, int(token_budget or 0))
+    high_value = _bucket_is_high_value(bucket)
+    detail_query = _query_requests_direct_detail(query_text)
+    original_fits = original_tokens <= budget
+    wants_capsule = mode == "full" or (mode == "auto" and (high_value or detail_query))
+    if original_fits:
+        shape = "bucket_original"
+        reason = "original_fits_budget"
+    elif wants_capsule:
+        shape = "bucket_capsule"
+        if mode == "full":
+            reason = "mode_full"
+        elif detail_query:
+            reason = "auto_detail_query"
+        else:
+            reason = "auto_high_value"
+    else:
+        shape = "bucket_window"
+        reason = "long_bucket_window"
+    return {
+        "mode": mode,
+        "shape": shape,
+        "reason": reason,
+        "token_budget": budget,
+        "original_tokens": original_tokens,
+        "original_fits": original_fits,
+        "high_value": high_value,
+        "detail_query": detail_query,
+        "wants_capsule": wants_capsule,
+    }
+
+
 def _format_direct_bucket_window(
     bucket: dict,
     moment: dict,
@@ -2760,6 +2807,8 @@ async def _build_recall_debug_payload(
     *,
     max_candidates: int = 20,
     max_results: int = 3,
+    max_tokens: int = 800,
+    direct_render_mode: str = "auto",
     domain: str = "",
     valence: float | None = None,
     arousal: float | None = None,
@@ -2770,6 +2819,8 @@ async def _build_recall_debug_payload(
 
     max_candidates = _int_between(max_candidates, 20, 1, 100)
     max_results = _int_between(max_results, 3, 1, 20)
+    max_tokens = _int_between(max_tokens, 800, 1, 20000)
+    direct_render_mode = _normalize_direct_render_mode(direct_render_mode)
     domain_filter = [d.strip() for d in str(domain or "").split(",") if d.strip()] or None
     q_valence = valence if isinstance(valence, (int, float)) and 0 <= valence <= 1 else None
     q_arousal = arousal if isinstance(arousal, (int, float)) and 0 <= arousal <= 1 else None
@@ -2895,6 +2946,7 @@ async def _build_recall_debug_payload(
         if moment.get("moment_id")
     }
     displayed_set = set(displayed_moment_ids)
+    bucket_map = {str(bucket.get("id") or ""): bucket for bucket in all_buckets if bucket.get("id")}
     options = _recall_relevance_options()
 
     candidates = []
@@ -2905,6 +2957,7 @@ async def _build_recall_debug_payload(
         gated = gated_by_id.get(moment_id)
         final = reranked_by_id.get(moment_id) or gated
         seed = seed_diagnostics.get(bucket_id, {})
+        bucket = bucket_map.get(bucket_id)
         admission = _breath_moment_admission_decision(query, final or moment, seed_diagnostics)
         candidates.append(
             {
@@ -2939,6 +2992,13 @@ async def _build_recall_debug_payload(
                 "selected_returned": moment_id in returned_set,
                 "selected_direct": moment_id in displayed_set,
                 "selected_secondary": moment_id in secondary_ids,
+                "direct_render": _direct_bucket_render_debug(
+                    bucket,
+                    final or moment,
+                    max_tokens,
+                    query_text=query,
+                    direct_render_mode=direct_render_mode,
+                ) if bucket else {},
                 "layer_debug": moment_layer_debug(final or moment, explicit_lookup=explicit_lookup),
                 "runtime_gate": moment_runtime_gate_debug(final or moment, explicit_lookup=explicit_lookup),
                 "annotation_summary": (moment.get("metadata") or {}).get("annotation_summary"),
@@ -2952,7 +3012,11 @@ async def _build_recall_debug_payload(
         "status": "ok",
         "query": query,
         "search_query": search_query,
-        "recall_thresholds": recall_thresholds,
+        "recall_thresholds": {
+            **recall_thresholds,
+            "max_tokens": max_tokens,
+            "direct_render_mode": direct_render_mode,
+        },
         "seed_buckets": list(seed_diagnostics.values())[:max_candidates],
         "candidate_count": len(pre_gate_candidates),
         "admitted_count": len(admitted_moments),
@@ -5827,6 +5891,8 @@ async def api_recall_debug(request):
         request.query_params.get("q", ""),
         max_candidates=_int_between(request.query_params.get("max_candidates"), 20, 1, 100),
         max_results=_int_between(request.query_params.get("max_results"), 3, 1, 20),
+        max_tokens=_int_between(request.query_params.get("max_tokens"), 800, 1, 20000),
+        direct_render_mode=request.query_params.get("direct_render_mode", "auto"),
         domain=request.query_params.get("domain", ""),
         valence=q_valence,
         arousal=q_arousal,

@@ -3380,6 +3380,7 @@ function renderRecallDebug(data) {
     { text: (data.admitted_count || 0) + ' admitted', state: data.admitted_count ? 'allow' : '' },
     { text: (data.suppressed_count || 0) + ' suppressed', state: data.suppressed_count ? 'block' : '' },
     { text: 'profile ' + (thresholds.profile || 'default') },
+    { text: 'direct ' + (thresholds.direct_render_mode || 'auto') },
   ];
   var body = candidates.length
     ? '<div class="moment-list">' + candidates.map(renderRecallCandidate).join('') + '</div>'
@@ -3404,6 +3405,12 @@ function renderRecallCandidate(candidate) {
   if (c.admission_reason) chips.push({ text: c.admission_reason, state: admitted ? 'allow' : 'block' });
   if (c.rerank_score != null) chips.push({ text: 'rerank ' + Number(c.rerank_score).toFixed(2) });
   if (c.embedding_score != null) chips.push({ text: 'semantic ' + Number(c.embedding_score).toFixed(2) });
+  if (c.direct_render && c.direct_render.shape) {
+    chips.push({
+      text: 'render ' + c.direct_render.shape + ' · ' + (c.direct_render.reason || ''),
+      state: c.direct_render.shape === 'bucket_capsule' ? 'allow' : '',
+    });
+  }
   if (c.gate_reasons && c.gate_reasons.length) {
     chips.push({ text: c.gate_reasons.join(' · '), state: c.gate === 'filtered' ? 'block' : '' });
   }

@@ -64,6 +64,9 @@ def test_dashboard_breath_debug_loads_recall_moment_candidates():
     assert "BASE + '/api/recall-debug?q='" in html
     assert "function renderRecallDebug(data)" in html
     assert "function renderRecallCandidate(candidate)" in html
+    assert "selected_secondary" in html
+    assert "direct_render.shape" in html
+    assert "render ' + c.direct_render.shape" in html
     assert "Moment 命中" in html
 
 

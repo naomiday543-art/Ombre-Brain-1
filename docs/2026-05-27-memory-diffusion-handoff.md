@@ -961,7 +961,7 @@ gateway:
 - 脱水胶囊应单独 cache，避免和扩散摘要的短 summary 混用。
 - 扩散输出继续用 compact summary，不能因为 direct 改成原文而变吵。
 
-当前剩余更像观察和体验调参，不是主链路缺口：
+当前剩余更像观察和体验调参，不是主链路缺口。
 
-- Dashboard 加只读观察面板：query 命中 moment、direct 渲染形状、diffusion path、被 gate 掉的原因。
+- Dashboard 只读观察面板已能看 query 命中 moment、direct / secondary 角色、direct 渲染形状、diffusion path、被 gate 掉的原因。
 - 外部 transcript / raw chat source 若要接入，再把 `source_ref.source` 从 `bucket_content` 扩到 transcript 文件。

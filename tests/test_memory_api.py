@@ -539,6 +539,8 @@ async def test_api_recall_debug_returns_query_moment_candidates(monkeypatch, buc
     assert payload["candidates"][0]["bucket_id"] == bucket_id
     assert payload["candidates"][0]["moment_id"]
     assert payload["candidates"][0]["runtime_gate"]["direct_seed"]["allowed"] is True
+    assert payload["candidates"][0]["direct_render"]["shape"] == "bucket_original"
+    assert payload["candidates"][0]["direct_render"]["reason"] == "original_fits_budget"
     assert "蓝色" in payload["candidates"][0]["text_preview"]
 
 
@@ -589,6 +591,47 @@ async def test_api_recall_debug_marks_secondary_direct_candidate(monkeypatch, bu
     assert candidates[role_id]["selected_direct"] is True
     assert candidates[four_id]["selected_secondary"] is True
     assert candidates[four_id]["embedding_score"] == pytest.approx(0.95)
+
+
+@pytest.mark.asyncio
+async def test_api_recall_debug_predicts_direct_capsule_shape(monkeypatch, bucket_mgr, test_config):
+    import server
+    from memory_edges import MemoryEdgeStore
+    from memory_moments import MemoryMomentStore
+
+    bucket_id = await bucket_mgr.create(
+        content="高价值长桶细节：" + " 这段原文需要保留关键转折和原话。" * 120,
+        name="高价值长桶",
+        tags=["haven_favorite"],
+        domain=["恋爱"],
+        importance=10,
+    )
+    monkeypatch.setattr(server, "bucket_mgr", bucket_mgr)
+    monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
+    monkeypatch.setattr(server, "memory_edge_store", MemoryEdgeStore(test_config))
+    monkeypatch.setattr(server, "memory_moment_store", MemoryMomentStore(test_config))
+    monkeypatch.setattr(server, "reranker_engine", SimpleNamespace(enabled=False))
+    monkeypatch.setattr(server, "config", test_config)
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+
+    response = await server.api_recall_debug(
+        DummyRequest(
+            query_params={
+                "q": "高价值长桶",
+                "max_candidates": "5",
+                "max_results": "1",
+                "max_tokens": "80",
+                "direct_render_mode": "auto",
+            }
+        )
+    )
+    payload = json.loads(response.body)
+    candidate = next(item for item in payload["candidates"] if item["bucket_id"] == bucket_id)
+
+    assert response.status_code == 200
+    assert candidate["direct_render"]["shape"] == "bucket_capsule"
+    assert candidate["direct_render"]["reason"] == "auto_high_value"
+    assert candidate["direct_render"]["high_value"] is True
 
 
 @pytest.mark.asyncio

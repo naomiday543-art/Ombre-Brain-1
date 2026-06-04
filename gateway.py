@@ -593,6 +593,7 @@ class GatewayService:
         favorite_memory = ""
         favorite_ids: list[str] = []
         related_memory = ""
+        diffused_moment_debug: list[dict[str, Any]] = []
         context_mode = ""
         persona_state: dict[str, Any] | None = None
         injected_ids: list[str] | None = None
@@ -660,7 +661,7 @@ class GatewayService:
             ):
                 favorite_memory, favorite_ids = await self._build_favorite_memory_block(all_buckets, session_id)
             if self.retrieval_mode == "graph":
-                related_memory = self._build_moment_diffused_memory_block(
+                related_memory, diffused_moment_debug = self._build_moment_diffused_memory_with_debug(
                     recalled_moments,
                     moment_candidates,
                     all_moments,
@@ -739,6 +740,7 @@ class GatewayService:
                 recent_context_reason=recent_context_reason,
                 favorite_ids=favorite_ids,
                 context_mode=context_mode,
+                diffused_moment_debug=diffused_moment_debug,
                 suppressed_moments=suppressed_moments,
                 suppressed_buckets=suppressed_buckets,
             )
@@ -3061,12 +3063,33 @@ class GatewayService:
         *,
         context_mode: str = "",
     ) -> str:
+        text, _debug_rows = self._build_moment_diffused_memory_with_debug(
+            seed_moments,
+            moment_candidates,
+            moments,
+            edges,
+            query_text,
+            context_mode=context_mode,
+        )
+        return text
+
+    def _build_moment_diffused_memory_with_debug(
+        self,
+        seed_moments: list[dict],
+        moment_candidates: list[dict],
+        moments: list[dict],
+        edges: list[dict],
+        query_text: str = "",
+        *,
+        context_mode: str = "",
+    ) -> tuple[str, list[dict[str, Any]]]:
         if self.related_memory_budget <= 0 or not seed_moments:
-            return ""
+            return "", []
 
         query_plan = self._recall_query_plan(query_text, context_mode=context_mode)
         remaining = self.related_memory_budget
-        parts = []
+        parts: list[str] = []
+        debug_rows: list[dict[str, Any]] = []
         related_max_chars = query_plan.related_max_chars
         allow_caution_paths = query_plan.allow_caution_diffusion
         allow_archive_targets = query_plan.allow_archive_targets
@@ -3098,13 +3121,21 @@ class GatewayService:
             if tokens <= 0:
                 continue
             parts.append(block)
+            debug_rows.append(
+                self._format_diffused_moment_debug(
+                    moment,
+                    note="related_query_hit",
+                    explicit_lookup=allow_archive_targets,
+                    query=query_text,
+                )
+            )
             remaining -= tokens
             used_bucket_ids.add(str(moment.get("bucket_id") or ""))
             if remaining <= 0:
                 break
 
         if remaining <= 0 or not self.diffusion_options.enabled or self.diffusion_options.top_k <= 0:
-            return "\n".join(parts)
+            return "\n".join(parts), debug_rows
 
         filtered_edges = [
             edge for edge in edges
@@ -3166,12 +3197,27 @@ class GatewayService:
             if tokens <= 0:
                 continue
             parts.append(block)
+            debug_rows.append(
+                self._format_diffused_moment_debug(
+                    moment,
+                    note=note,
+                    path=path,
+                    moment_map=moment_map,
+                    explicit_lookup=allow_archive_targets,
+                    query=query_text,
+                    chain_bundle=(
+                        self.diffusion_options.chain_walk_enabled
+                        and path is not None
+                        and len(getattr(path, "steps", ()) or ()) >= 2
+                    ),
+                )
+            )
             remaining -= tokens
             used_bucket_ids.add(bucket_id)
             seen_moment_ids.add(str(moment.get("moment_id") or hit.bucket_id))
             if remaining <= 0:
                 break
-        return "\n".join(parts)
+        return "\n".join(parts), debug_rows
 
     def _secondary_direct_moments(
         self,
@@ -3364,11 +3410,30 @@ class GatewayService:
         max_items: int = 2,
         max_chars: int = 90,
     ) -> str:
+        return self._format_temperature_context_items(
+            self._diffused_temperature_context_items(
+                moment,
+                path=path,
+                moment_map=moment_map,
+                max_items=max_items,
+                max_chars=max_chars,
+            )
+        )
+
+    def _diffused_temperature_context_items(
+        self,
+        moment: dict,
+        *,
+        path: Any | None = None,
+        moment_map: dict[str, dict] | None = None,
+        max_items: int = 2,
+        max_chars: int = 90,
+    ) -> list[dict[str, Any]]:
         moment_map = moment_map or {}
         bucket_id = str(moment.get("bucket_id") or "")
         if not bucket_id:
-            return ""
-        contexts: list[dict] = []
+            return []
+        contexts: list[dict[str, Any]] = []
         seen: set[str] = set()
 
         def add_context(candidate: dict | None) -> None:
@@ -3384,7 +3449,17 @@ class GatewayService:
             if not self._moment_text(candidate, max_chars):
                 return
             seen.add(moment_id)
-            contexts.append(candidate)
+            section = str(candidate.get("section") or "")
+            contexts.append(
+                {
+                    "bucket_id": bucket_id,
+                    "bucket_name": self._moment_bucket_title(candidate),
+                    "moment_id": moment_id,
+                    "section": section,
+                    "label": MOMENT_SECTION_LABELS.get(section, section or "moment"),
+                    "text_preview": self._moment_text(candidate, max_chars),
+                }
+            )
 
         for node_id in getattr(path, "nodes", ()) or ():
             add_context(moment_map.get(str(node_id)))
@@ -3396,10 +3471,14 @@ class GatewayService:
             if len(contexts) >= max_items:
                 break
 
+        return contexts
+
+    @staticmethod
+    def _format_temperature_context_items(items: list[dict[str, Any]]) -> str:
         return " / ".join(
-            f"[{MOMENT_SECTION_LABELS.get(str(item.get('section') or ''), str(item.get('section') or 'moment'))}] "
-            f"{self._moment_text(item, max_chars)}"
-            for item in contexts
+            f"[{item.get('label') or item.get('section') or 'moment'}] {item.get('text_preview') or ''}"
+            for item in items
+            if item.get("text_preview")
         )
 
     def _diffused_moment_summary(
@@ -4160,6 +4239,123 @@ class GatewayService:
         gate["would_inject_direct"] = direct_allowed
         return gate
 
+    def _moment_related_runtime_gate_payload(
+        self,
+        moment: dict,
+        *,
+        explicit_lookup: bool = False,
+        query: str = "",
+    ) -> dict[str, Any]:
+        gate = moment_runtime_gate_debug(moment, explicit_lookup=explicit_lookup)
+        query_plan = self._recall_query_plan(query)
+        topic_required = bool(query_plan.enforce_topic_evidence)
+        has_topic_evidence = (
+            self._moment_has_query_topic_evidence(query, moment)
+            if topic_required and isinstance(moment, dict)
+            else False
+        )
+        related_allowed = bool(gate["related_target"]["allowed"])
+        related_reason = str(gate["related_target"]["reason"])
+        if related_allowed and topic_required and not has_topic_evidence:
+            related_allowed = False
+            related_reason = "query_topic_evidence_missing"
+        gate["topic_evidence"] = {
+            "required": topic_required,
+            "present": has_topic_evidence if topic_required else None,
+        }
+        gate["related_injection"] = {
+            "allowed": related_allowed,
+            "reason": related_reason,
+        }
+        gate["would_inject_related"] = related_allowed
+        return gate
+
+    def _format_diffused_moment_debug(
+        self,
+        moment: dict,
+        *,
+        note: str = "",
+        path: Any | None = None,
+        moment_map: dict[str, dict] | None = None,
+        explicit_lookup: bool = False,
+        query: str = "",
+        chain_bundle: bool = False,
+    ) -> dict[str, Any]:
+        moment_map = moment_map or {}
+        payload = {
+            "bucket_id": str(moment.get("bucket_id") or ""),
+            "bucket_name": self._moment_bucket_title(moment),
+            "moment_id": str(moment.get("moment_id") or ""),
+            "section": moment.get("section"),
+            "note": str(note or ""),
+            "chain_bundle": bool(chain_bundle),
+            "layer_debug": moment_layer_debug(moment, explicit_lookup=explicit_lookup),
+            "runtime_gate": self._moment_related_runtime_gate_payload(
+                moment,
+                explicit_lookup=explicit_lookup,
+                query=query,
+            ),
+            "temperature_context": self._diffused_temperature_context_items(
+                moment,
+                path=path,
+                moment_map=moment_map,
+            ),
+            "text_preview": self._moment_text(moment, 180),
+        }
+        if path is not None:
+            payload["path"] = self._format_diffused_path_debug(path, moment_map)
+        return payload
+
+    def _format_diffused_path_debug(self, path: Any, moment_map: dict[str, dict]) -> dict[str, Any]:
+        nodes = tuple(str(node_id) for node_id in (getattr(path, "nodes", ()) or ()))
+        steps = tuple(getattr(path, "steps", ()) or ())
+        return {
+            "trace": self._moment_path_summary(path, moment_map),
+            "score": self._safe_float(getattr(path, "score", 0.0), 0.0),
+            "nodes": [
+                self._format_diffused_path_node_debug(node_id, moment_map.get(node_id))
+                for node_id in nodes
+            ],
+            "steps": [
+                {
+                    "source": str(getattr(step, "source", "") or ""),
+                    "source_label": self._moment_node_label(
+                        moment_map.get(str(getattr(step, "source", "") or "")),
+                        str(getattr(step, "source", "") or ""),
+                    ),
+                    "target": str(getattr(step, "target", "") or ""),
+                    "target_label": self._moment_node_label(
+                        moment_map.get(str(getattr(step, "target", "") or "")),
+                        str(getattr(step, "target", "") or ""),
+                    ),
+                    "relation_type": str(getattr(step, "relation_type", "") or "relates_to"),
+                    "confidence": self._safe_float(getattr(step, "confidence", 0.0), 0.0),
+                    "direction": str(getattr(step, "direction", "") or "outgoing"),
+                    "reason": str(getattr(step, "reason", "") or ""),
+                }
+                for step in steps
+            ],
+        }
+
+    def _format_diffused_path_node_debug(
+        self,
+        moment_id: str,
+        moment: dict | None,
+    ) -> dict[str, Any]:
+        if not isinstance(moment, dict):
+            return {
+                "moment_id": str(moment_id or ""),
+                "bucket_id": "",
+                "bucket_name": str(moment_id or ""),
+                "section": "",
+            }
+        return {
+            "moment_id": str(moment.get("moment_id") or moment_id or ""),
+            "bucket_id": str(moment.get("bucket_id") or ""),
+            "bucket_name": self._moment_bucket_title(moment),
+            "section": str(moment.get("section") or ""),
+        }
+
     def _format_suppressed_bucket_debug(
         self,
         item: dict,
@@ -4243,6 +4439,7 @@ class GatewayService:
         recent_context_reason: str,
         favorite_ids: list[str],
         context_mode: str = "",
+        diffused_moment_debug: list[dict[str, Any]] | None = None,
         suppressed_moments: list[dict] | None = None,
         suppressed_buckets: list[dict] | None = None,
     ) -> dict[str, Any]:
@@ -4256,7 +4453,27 @@ class GatewayService:
             for moment in recalled_moments
             if moment.get("bucket_id")
         ]
-        diffused_bucket_ids = self._extract_bucket_ids_from_context(related_memory)
+        diffused_debug_rows = diffused_moment_debug or []
+        diffused_bucket_ids = list(
+            dict.fromkeys(
+                self._extract_bucket_ids_from_context(related_memory)
+                + [
+                    str(row.get("bucket_id") or "")
+                    for row in diffused_debug_rows
+                    if isinstance(row, dict) and row.get("bucket_id")
+                ]
+            )
+        )
+        diffused_moment_ids = list(
+            dict.fromkeys(
+                self._extract_moment_ids_from_context(related_memory)
+                + [
+                    str(row.get("moment_id") or "")
+                    for row in diffused_debug_rows
+                    if isinstance(row, dict) and row.get("moment_id")
+                ]
+            )
+        )
         injected_bucket_ids = list(dict.fromkeys(recalled_bucket_ids + diffused_bucket_ids + favorite_ids))
         explicit_lookup = self._query_explicitly_requests_caution_memory(query)
         bucket_map = {
@@ -4289,7 +4506,8 @@ class GatewayService:
                 )
                 for moment in recalled_moments[:20]
             ],
-            "diffused_moment_ids": self._extract_moment_ids_from_context(related_memory),
+            "diffused_moment_ids": diffused_moment_ids,
+            "diffused_moment_debug": diffused_debug_rows[:20],
             "suppressed_bucket_candidates": [
                 self._format_suppressed_bucket_debug(
                     item,

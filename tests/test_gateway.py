@@ -2209,6 +2209,7 @@ def test_gateway_body_query_injects_moment_chain(
     assert "dynamic_context" not in summary_payload
     assert "stable_context" not in summary_payload
     assert summary_payload["recalled_moment_ids"] == debug_payload["recalled_moment_ids"]
+    assert summary_payload["diffused_moment_debug"] == debug_payload["diffused_moment_debug"]
 
 
 def test_gateway_diffused_memory_uses_summary_only_for_moments(
@@ -2498,6 +2499,10 @@ def test_gateway_diffused_memory_renders_temperature_context(
             },
             json={"messages": [{"role": "user", "content": "种子项目现在怎样"}]},
         )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-diffused-temperature-context&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
 
     assert response.status_code == 200
     injected = _joined_message_content(captured[0]["json"]["messages"])
@@ -2509,6 +2514,113 @@ def test_gateway_diffused_memory_renders_temperature_context(
     assert "扩散目标温度锚点应该作为辅助语境出现" in injected
     assert "模板解释不应该进入输出" not in injected
     assert "年轮：扩散目标后来被重新确认" in injected
+    assert debug_response.status_code == 200
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    debug_rows = debug_payload["diffused_moment_debug"]
+    target_debug = next(row for row in debug_rows if row["bucket_id"] == target_id)
+    assert target_debug["note"] == "background_association_not_current_fact"
+    assert target_debug["runtime_gate"]["would_inject_related"] is True
+    assert target_debug["temperature_context"][0]["section"] == "affect_anchor"
+    assert "扩散目标温度锚点" in target_debug["temperature_context"][0]["text_preview"]
+
+
+def test_gateway_injection_debug_exposes_diffused_chain_bundle(
+    monkeypatch,
+    test_config,
+    bucket_mgr,
+):
+    from memory_edges import MemoryEdgeStore
+
+    cfg = _gateway_config(
+        test_config,
+        recent_context_budget=0,
+        recalled_memory_budget=500,
+        related_memory_budget=1600,
+        inject_total_budget=2600,
+        current_inner_state_interval_rounds=0,
+    )
+    cfg["memory_diffusion"] = {
+        "chain_walk_enabled": True,
+        "chain_max_hops": 3,
+        "chain_min_confidence": 0.7,
+        "min_activation": 0.0,
+        "top_k": 4,
+    }
+    seed_id = _create_bucket(
+        bucket_mgr,
+        content="链路种子项目现在需要被直接召回。",
+        name="链路种子项目",
+        hours_ago=24,
+        importance=10,
+        domain=["测试"],
+    )
+    bridge_id = _create_bucket(
+        bucket_mgr,
+        content="链路桥接阶段连接了种子和目标。",
+        name="链路桥接阶段",
+        hours_ago=48,
+        importance=9,
+        domain=["测试"],
+    )
+    target_id = _create_bucket(
+        bucket_mgr,
+        content=(
+            "链路目标正文。\n\n"
+            "### affect_anchor\n\n"
+            "> 链路目标温度锚点应该进入结构化 debug。"
+        ),
+        name="链路温度目标",
+        hours_ago=72,
+        importance=9,
+        domain=["测试"],
+    )
+    edge_store = MemoryEdgeStore(cfg)
+    edge_store.add_edge(seed_id, bridge_id, "context_of", confidence=1.0, reason="seed to bridge")
+    edge_store.add_edge(bridge_id, target_id, "context_of", confidence=1.0, reason="bridge to target")
+
+    app, _, _, captured = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(seed_id, 0.99)],
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers={
+                "Authorization": "Bearer gateway-secret",
+                "X-Ombre-Session-Id": "sess-diffused-chain-debug",
+            },
+            json={"messages": [{"role": "user", "content": "链路种子项目现在怎样"}]},
+        )
+        debug_response = client.get(
+            "/api/debug/injections?session_id=sess-diffused-chain-debug&include_context=0",
+            headers={"Authorization": "Bearer gateway-secret"},
+        )
+
+    assert response.status_code == 200
+    injected = _joined_message_content(captured[0]["json"]["messages"])
+    assert "Chain Bundle" in injected
+    assert "链路温度目标" in injected
+    assert debug_response.status_code == 200
+    debug_payload = debug_response.json()["items"][0]["payload"]
+    assert target_id in debug_payload["diffused_bucket_ids"]
+    target_debug = next(row for row in debug_payload["diffused_moment_debug"] if row["bucket_id"] == target_id)
+    assert target_debug["chain_bundle"] is True
+    assert target_debug["note"] == "background_association_not_current_fact"
+    assert target_debug["path"]["trace"].count("context_of") == 2
+    assert [step["relation_type"] for step in target_debug["path"]["steps"][:2]] == [
+        "context_of",
+        "context_of",
+    ]
+    assert [node["bucket_name"] for node in target_debug["path"]["nodes"][:3]] == [
+        "链路种子项目",
+        "链路桥接阶段",
+        "链路温度目标",
+    ]
+    assert target_debug["temperature_context"][0]["section"] == "affect_anchor"
+    assert "链路目标温度锚点" in target_debug["temperature_context"][0]["text_preview"]
 
 
 def test_gateway_bucket_edge_bridge_uses_direct_target_representative(

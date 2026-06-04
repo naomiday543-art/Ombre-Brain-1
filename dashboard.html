@@ -3546,6 +3546,7 @@ function renderGatewayInjectionItem(item) {
   var recalledMoments = payload.recalled_moment_ids || [];
   var diffusedMoments = payload.diffused_moment_ids || [];
   var directRender = gatewayDirectRenderSummaries(payload);
+  var chainDebug = gatewayChainDebugSummaries(payload);
   var chips = [
     { text: 'round ' + (row.round_id || '—') },
     { text: 'recalled ' + recalled.length, state: recalled.length ? 'allow' : '' },
@@ -3565,6 +3566,7 @@ function renderGatewayInjectionItem(item) {
     '<div class="diffusion-path">buckets: ' + esc(injected.slice(0, 8).join(', ') || '—') + '</div>' +
     '<div class="diffusion-path">moments: ' + esc(recalledMoments.concat(diffusedMoments).slice(0, 8).join(', ') || '—') + '</div>' +
     (directRender ? '<div class="diffusion-path">direct render: ' + esc(directRender) + '</div>' : '') +
+    (chainDebug ? '<div class="diffusion-path">diffused chain: ' + esc(chainDebug) + '</div>' : '') +
     (contextPreview ? '<div class="gateway-context-preview">' + esc(contextPreview) + '</div>' : '') +
   '</div>';
 }
@@ -3576,6 +3578,22 @@ function gatewayDirectRenderSummaries(payload) {
     if (!r.shape) return '';
     var label = row.bucket_name || row.bucket_id || row.moment_id || 'moment';
     return label + ' -> ' + r.shape + (r.reason ? ' · ' + r.reason : '');
+  }).filter(Boolean).slice(0, 5).join(' / ');
+}
+
+function gatewayChainDebugSummaries(payload) {
+  var rows = Array.isArray(payload.diffused_moment_debug) ? payload.diffused_moment_debug : [];
+  return rows.map(function(row) {
+    var label = row.bucket_name || row.bucket_id || row.moment_id || 'moment';
+    var bits = [];
+    if (row.chain_bundle) bits.push('chain_bundle');
+    if (row.note) bits.push(row.note);
+    if (row.path && row.path.trace) bits.push(row.path.trace);
+    var temps = Array.isArray(row.temperature_context) ? row.temperature_context.map(function(item) {
+      return item.label || item.section || '';
+    }).filter(Boolean).join('+') : '';
+    if (temps) bits.push('temp ' + temps);
+    return bits.length ? label + ' -> ' + bits.join(' · ') : '';
   }).filter(Boolean).slice(0, 5).join(' / ');
 }
 

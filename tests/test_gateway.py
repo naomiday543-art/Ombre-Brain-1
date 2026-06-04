@@ -263,7 +263,13 @@ def test_gateway_state_store_cooldown_curve(tmp_path):
 def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_config, bucket_mgr):
     app, service, _, _ = _build_service(
         monkeypatch,
-        _gateway_config(test_config, cooldown_hours=6, skip_recent_rounds=5),
+        _gateway_config(
+            test_config,
+            cooldown_hours=6,
+            skip_recent_rounds=5,
+            recent_context_budget=300,
+            current_inner_state_interval_rounds=15,
+        ),
         bucket_mgr,
     )
 
@@ -271,13 +277,29 @@ def test_gateway_config_endpoint_updates_memory_cooldown(monkeypatch, test_confi
         response = client.post(
             "/api/config",
             headers={"Authorization": "Bearer gateway-secret"},
-            json={"gateway": {"cooldown_hours": 2.5, "skip_recent_rounds": 3}},
+            json={
+                "gateway": {
+                    "cooldown_hours": 2.5,
+                    "skip_recent_rounds": 3,
+                    "recent_context_budget": 128,
+                    "current_inner_state_interval_rounds": 12,
+                }
+            },
         )
 
     assert response.status_code == 200
-    assert response.json()["updated"] == ["gateway.cooldown_hours", "gateway.skip_recent_rounds"]
+    assert response.json()["updated"] == [
+        "gateway.cooldown_hours",
+        "gateway.skip_recent_rounds",
+        "gateway.recent_context_budget",
+        "gateway.current_inner_state_interval_rounds",
+    ]
     assert service.cooldown_hours == pytest.approx(2.5)
     assert service.skip_recent_rounds == 3
+    assert service.recent_budget == 128
+    assert service.current_inner_state_interval_rounds == 12
+    assert response.json()["gateway"]["recent_context_budget"] == 128
+    assert response.json()["gateway"]["current_inner_state_interval_rounds"] == 12
 
 
 def test_gateway_defaults_openai_session_id(monkeypatch, test_config, bucket_mgr):

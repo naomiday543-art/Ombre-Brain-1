@@ -39,14 +39,30 @@ def test_dashboard_bucket_list_has_bulk_delete_controls():
     assert "受保护记忆不能批量删除" in html
 def test_dashboard_exposes_gateway_memory_cooldown_settings():
     html = Path("dashboard.html").read_text(encoding="utf-8")
+    config_view = html.split('id="config-view"', 1)[1].split('id="memory-config-view"', 1)[0]
 
+    assert 'data-tab="memory-config">记忆浮现' in html
+    assert 'id="memory-config-view"' in html
+    assert "memory-config-view').style.display = target === 'memory-config'" in html
+    assert "if (target === 'memory-config') loadConfig();" in html
     assert "<h3>记忆浮现</h3>" in html
     assert 'id="cfg-gateway-cooldown"' in html
     assert 'id="cfg-gateway-rounds"' in html
+    assert 'id="cfg-recent-context-enabled"' in html
+    assert 'id="cfg-recent-context-budget"' in html
+    assert 'id="cfg-persona-context-enabled"' in html
+    assert 'id="cfg-persona-context-rounds"' in html
     assert "cfg.gateway.cooldown_hours" in html
     assert "cfg.gateway.skip_recent_rounds" in html
+    assert "cfg.gateway.recent_context_budget" in html
+    assert "cfg.gateway.current_inner_state_interval_rounds" in html
     assert "cooldown_hours: floatValue('cfg-gateway-cooldown', 6)" in html
     assert "skip_recent_rounds: numberValue('cfg-gateway-rounds', 5)" in html
+    assert "recent_context_budget: recentContextBudget" in html
+    assert "current_inner_state_interval_rounds: personaContextRounds" in html
+    assert 'id="cfg-recent-context-enabled"' not in config_view
+    assert "memory_diffusion" not in html
+    assert "retrieval_mode" not in html
 
 
 def test_dashboard_exposes_reflection_affect_anchor_switches():

@@ -213,6 +213,8 @@ class GatewayService:
         return {
             "cooldown_hours": self.cooldown_hours,
             "skip_recent_rounds": self.skip_recent_rounds,
+            "recent_context_budget": self.recent_budget,
+            "current_inner_state_interval_rounds": self.current_inner_state_interval_rounds,
         }
 
     def _apply_gateway_memory_config(self, payload: dict[str, Any]) -> list[str]:
@@ -225,6 +227,14 @@ class GatewayService:
             self.skip_recent_rounds = max(0, int(payload["skip_recent_rounds"]))
             self.gateway_cfg["skip_recent_rounds"] = self.skip_recent_rounds
             updated.append("gateway.skip_recent_rounds")
+        if "recent_context_budget" in payload:
+            self.recent_budget = max(0, int(payload["recent_context_budget"]))
+            self.gateway_cfg["recent_context_budget"] = self.recent_budget
+            updated.append("gateway.recent_context_budget")
+        if "current_inner_state_interval_rounds" in payload:
+            self.current_inner_state_interval_rounds = max(0, int(payload["current_inner_state_interval_rounds"]))
+            self.gateway_cfg["current_inner_state_interval_rounds"] = self.current_inner_state_interval_rounds
+            updated.append("gateway.current_inner_state_interval_rounds")
         return updated
 
     async def handle_config(self, request: Request) -> JSONResponse:

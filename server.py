@@ -3218,6 +3218,8 @@ async def api_config_get(request):
         "gateway": {
             "cooldown_hours": gateway_cfg.get("cooldown_hours", 6),
             "skip_recent_rounds": gateway_cfg.get("skip_recent_rounds", 5),
+            "recent_context_budget": gateway_cfg.get("recent_context_budget", 300),
+            "current_inner_state_interval_rounds": gateway_cfg.get("current_inner_state_interval_rounds", 15),
         },
         "dream": {
             "enabled": dream_engine.enabled,
@@ -3355,6 +3357,14 @@ async def api_config_update(request):
             gateway_cfg["skip_recent_rounds"] = max(0, int(g["skip_recent_rounds"]))
             gateway_hot_update_body["skip_recent_rounds"] = gateway_cfg["skip_recent_rounds"]
             updated.append("gateway.skip_recent_rounds")
+        if "recent_context_budget" in g:
+            gateway_cfg["recent_context_budget"] = max(0, int(g["recent_context_budget"]))
+            gateway_hot_update_body["recent_context_budget"] = gateway_cfg["recent_context_budget"]
+            updated.append("gateway.recent_context_budget")
+        if "current_inner_state_interval_rounds" in g:
+            gateway_cfg["current_inner_state_interval_rounds"] = max(0, int(g["current_inner_state_interval_rounds"]))
+            gateway_hot_update_body["current_inner_state_interval_rounds"] = gateway_cfg["current_inner_state_interval_rounds"]
+            updated.append("gateway.current_inner_state_interval_rounds")
         hot_update_status = await _hot_update_gateway_config(gateway_hot_update_body)
         if hot_update_status:
             updated.append(hot_update_status)
@@ -3431,6 +3441,12 @@ async def api_config_update(request):
                     sc_gateway["cooldown_hours"] = max(0.0, float(body["gateway"]["cooldown_hours"]))
                 if "skip_recent_rounds" in body["gateway"]:
                     sc_gateway["skip_recent_rounds"] = max(0, int(body["gateway"]["skip_recent_rounds"]))
+                if "recent_context_budget" in body["gateway"]:
+                    sc_gateway["recent_context_budget"] = max(0, int(body["gateway"]["recent_context_budget"]))
+                if "current_inner_state_interval_rounds" in body["gateway"]:
+                    sc_gateway["current_inner_state_interval_rounds"] = max(
+                        0, int(body["gateway"]["current_inner_state_interval_rounds"])
+                    )
 
             if "reflection" in body:
                 sc_reflection = save_config.setdefault("reflection", {})

@@ -1381,6 +1381,7 @@
   <div class="tab" data-tab="persona">Persona</div>
   <div class="tab" data-tab="network">记忆网络</div>
   <div class="tab" data-tab="config">配置</div>
+  <div class="tab" data-tab="memory-config">记忆浮现</div>
   <div class="tab" data-tab="import">导入</div>
 </div>
 
@@ -1644,20 +1645,6 @@
     </div>
 
     <div class="config-section">
-      <h3>记忆浮现</h3>
-      <div class="config-row">
-        <label>冷却时间</label>
-        <input type="number" id="cfg-gateway-cooldown" min="0" max="168" step="0.5" />
-      </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 6，就是同一条记忆浮现后，6 小时内降低再次出现的概率</div>
-      <div class="config-row">
-        <label>冷却轮数</label>
-        <input type="number" id="cfg-gateway-rounds" min="0" max="50" />
-      </div>
-      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 5，就是最近 5 轮浮现过的记忆会优先避开</div>
-    </div>
-
-    <div class="config-section">
       <h3>记忆关系整理</h3>
       <div class="config-row">
         <label>日印象</label>
@@ -1695,6 +1682,50 @@
       <h3>系统信息</h3>
       <div id="config-readonly" style="font-size:13px;color:var(--text-dim);line-height:1.8;">加载中…</div>
     </div>
+  </div>
+</div>
+
+<div class="content" id="memory-config-view" style="display:none">
+  <div style="max-width:640px;margin:0 auto;">
+    <div class="config-section">
+      <h3>记忆浮现</h3>
+      <div class="config-row">
+        <label>最近记忆</label>
+        <select id="cfg-recent-context-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">控制 Gateway 是否自动注入 Recent Context；关闭后直命中记忆不受影响</div>
+      <div class="config-row">
+        <label>最近记忆预算</label>
+        <input type="number" id="cfg-recent-context-budget" min="0" max="2000" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 300；设 0 等同关闭最近记忆自动注入</div>
+      <div class="config-row">
+        <label>Persona提示</label>
+        <select id="cfg-persona-context-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">控制 Gateway 是否按轮次注入 Persona State 提示；关闭后仍会后台更新 Persona</div>
+      <div class="config-row">
+        <label>Persona轮数</label>
+        <input type="number" id="cfg-persona-context-rounds" min="0" max="200" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 15；设 0 等同关闭 Persona 提示注入</div>
+      <div class="config-row">
+        <label>冷却时间</label>
+        <input type="number" id="cfg-gateway-cooldown" min="0" max="168" step="0.5" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 6，就是同一条记忆浮现后，6 小时内降低再次出现的概率</div>
+      <div class="config-row">
+        <label>冷却轮数</label>
+        <input type="number" id="cfg-gateway-rounds" min="0" max="50" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认 5，就是最近 5 轮浮现过的记忆会优先避开</div>
+    </div>
+
+    <div style="display:flex;gap:12px;margin-top:8px;">
+      <button class="btn-primary" onclick="saveConfig(false)">应用（仅运行时）</button>
+      <button class="btn-secondary" onclick="saveConfig(true)">应用并写入 config.yaml</button>
+    </div>
+    <div id="memory-config-status" style="margin-top:16px;font-size:13px;"></div>
   </div>
 </div>
 
@@ -1845,12 +1876,14 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.getElementById('persona-view').style.display = target === 'persona' ? '' : 'none';
     document.getElementById('network-view').style.display = target === 'network' ? '' : 'none';
     document.getElementById('config-view').style.display = target === 'config' ? '' : 'none';
+    document.getElementById('memory-config-view').style.display = target === 'memory-config' ? '' : 'none';
     document.getElementById('import-view').style.display = target === 'import' ? '' : 'none';
     if (target === 'reflection') renderReflectionReview();
     if (target === 'dreams') loadDreams();
     if (target === 'persona') loadPersona();
     if (target === 'network') loadNetwork();
     if (target === 'config') loadConfig();
+    if (target === 'memory-config') loadConfig();
     if (target === 'import') { pollImportStatus(); loadImportResults(); }
   });
 });
@@ -3270,6 +3303,13 @@ document.getElementById('breath-query').addEventListener('keydown', function(e) 
   if (e.key === 'Enter') runBreathDebug();
 });
 
+function setConfigStatus(html) {
+  ['config-status', 'memory-config-status'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  });
+}
+
 async function loadConfig() {
   try {
     var res = await authFetch(BASE + '/api/config');
@@ -3299,6 +3339,12 @@ async function loadConfig() {
     document.getElementById('cfg-dream-anchor').value = cfg.dream.identity_anchor_id || '';
     document.getElementById('cfg-gateway-cooldown').value = (cfg.gateway && cfg.gateway.cooldown_hours) ?? 6;
     document.getElementById('cfg-gateway-rounds').value = (cfg.gateway && cfg.gateway.skip_recent_rounds) ?? 5;
+    var recentContextBudget = (cfg.gateway && cfg.gateway.recent_context_budget) ?? 300;
+    document.getElementById('cfg-recent-context-budget').value = recentContextBudget;
+    document.getElementById('cfg-recent-context-enabled').value = recentContextBudget > 0 ? 'true' : 'false';
+    var personaContextRounds = (cfg.gateway && cfg.gateway.current_inner_state_interval_rounds) ?? 15;
+    document.getElementById('cfg-persona-context-rounds').value = personaContextRounds;
+    document.getElementById('cfg-persona-context-enabled').value = personaContextRounds > 0 ? 'true' : 'false';
     document.getElementById('cfg-reflection-daily').value =
       (cfg.reflection && cfg.reflection.daily_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-reflection-memory-anchor').value =
@@ -3312,8 +3358,7 @@ async function loadConfig() {
       'Dream API: <strong>' + (cfg.dream.api_ready ? '已设置' : '未设置') + '</strong><br>' +
       'Embedding effective URL: <strong>' + esc(cfg.embedding.effective_base_url || '未设置') + '</strong>';
   } catch (e) {
-    document.getElementById('config-status').innerHTML =
-      '<span style="color:var(--negative)">加载失败: ' + esc(e.message) + '</span>';
+    setConfigStatus('<span style="color:var(--negative)">加载失败: ' + esc(e.message) + '</span>');
   }
 }
 
@@ -3326,6 +3371,13 @@ async function saveConfig(persist) {
     var n = parseFloat(document.getElementById(id).value);
     return Number.isFinite(n) ? n : fallback;
   }
+
+  var recentContextEnabled = document.getElementById('cfg-recent-context-enabled').value === 'true';
+  var recentContextBudget = recentContextEnabled ? numberValue('cfg-recent-context-budget', 300) : 0;
+  if (recentContextEnabled && recentContextBudget <= 0) recentContextBudget = 300;
+  var personaContextEnabled = document.getElementById('cfg-persona-context-enabled').value === 'true';
+  var personaContextRounds = personaContextEnabled ? numberValue('cfg-persona-context-rounds', 15) : 0;
+  if (personaContextEnabled && personaContextRounds <= 0) personaContextRounds = 15;
 
   var body = {
     dehydration: {
@@ -3353,6 +3405,8 @@ async function saveConfig(persist) {
     gateway: {
       cooldown_hours: floatValue('cfg-gateway-cooldown', 6),
       skip_recent_rounds: numberValue('cfg-gateway-rounds', 5),
+      recent_context_budget: recentContextBudget,
+      current_inner_state_interval_rounds: personaContextRounds,
     },
     reflection: {
       daily_enabled: document.getElementById('cfg-reflection-daily').value === 'true',
@@ -3369,7 +3423,6 @@ async function saveConfig(persist) {
   var dreamKeyVal = document.getElementById('cfg-dream-key').value;
   if (dreamKeyVal) body.dream.api_key = dreamKeyVal;
 
-  var status = document.getElementById('config-status');
   try {
     var res = await authFetch(BASE + '/api/config', {
       method: 'POST',
@@ -3379,13 +3432,13 @@ async function saveConfig(persist) {
     if (!res) return;
     var result = await res.json();
     if (result.ok) {
-      status.innerHTML = '<span style="color:var(--positive)">✓ 已更新: ' + esc((result.updated || []).join(', ')) + '</span>';
+      setConfigStatus('<span style="color:var(--positive)">✓ 已更新: ' + esc((result.updated || []).join(', ')) + '</span>');
       loadConfig();
     } else {
-      status.innerHTML = '<span style="color:var(--negative)">✗ ' + esc(result.error || '未知错误') + '</span>';
+      setConfigStatus('<span style="color:var(--negative)">✗ ' + esc(result.error || '未知错误') + '</span>');
     }
   } catch (e) {
-    status.innerHTML = '<span style="color:var(--negative)">✗ 请求失败: ' + esc(e.message) + '</span>';
+    setConfigStatus('<span style="color:var(--negative)">✗ 请求失败: ' + esc(e.message) + '</span>');
   }
 }
 

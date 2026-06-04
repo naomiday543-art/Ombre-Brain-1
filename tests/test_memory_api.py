@@ -1092,6 +1092,34 @@ async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_config_get_reports_gateway_memory_surfacing_switches(monkeypatch):
+    import server
+
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "gateway": {
+                "cooldown_hours": 7,
+                "skip_recent_rounds": 4,
+                "recent_context_budget": 0,
+                "current_inner_state_interval_rounds": 15,
+            },
+        },
+    )
+
+    response = await server.api_config_get(DummyRequest())
+    payload = json.loads(response.body)
+
+    assert payload["gateway"]["cooldown_hours"] == 7
+    assert payload["gateway"]["skip_recent_rounds"] == 4
+    assert payload["gateway"]["recent_context_budget"] == 0
+    assert payload["gateway"]["current_inner_state_interval_rounds"] == 15
+
+
+@pytest.mark.asyncio
 async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_config, tmp_path):
     import server
 
@@ -1100,13 +1128,13 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     runtime_path.parent.mkdir(exist_ok=True)
     config_path.write_text(
         "dream:\n  model: yaml-old\n"
-        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n  recent_context_budget: 42\n  current_inner_state_interval_rounds: 8\n"
         "reflection:\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
         "dream:\n  model: runtime-old\n"
-        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n"
+        "gateway:\n  cooldown_hours: 48\n  skip_recent_rounds: 9\n  recent_context_budget: 42\n  current_inner_state_interval_rounds: 8\n"
         "reflection:\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
         encoding="utf-8",
     )
@@ -1124,6 +1152,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             **test_config["gateway"],
             "cooldown_hours": 48,
             "skip_recent_rounds": 9,
+            "recent_context_budget": 42,
+            "current_inner_state_interval_rounds": 8,
         },
         "reflection": {
             "daily_enabled": False,
@@ -1137,7 +1167,10 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         relationship_weather_affect_anchor_enabled=False,
     )
 
-    async def fake_hot_update(_body):
+    hot_update_bodies = []
+
+    async def fake_hot_update(body):
+        hot_update_bodies.append(body)
         return "gateway_hot_reloaded"
 
     monkeypatch.setenv("OMBRE_CONFIG_PATH", str(config_path))
@@ -1151,7 +1184,12 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         DummyRequest(
             {
                 "dream": {"auto_enabled": False, "model": "dream-new"},
-                "gateway": {"cooldown_hours": 6, "skip_recent_rounds": 5},
+                "gateway": {
+                    "cooldown_hours": 6,
+                    "skip_recent_rounds": 5,
+                    "recent_context_budget": 300,
+                    "current_inner_state_interval_rounds": 15,
+                },
                 "reflection": {
                     "daily_enabled": True,
                     "memory_affect_anchor_enabled": False,
@@ -1171,6 +1209,16 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["dream"]["auto_enabled"] is False
     assert runtime_config["gateway"]["cooldown_hours"] == 6
     assert runtime_config["gateway"]["skip_recent_rounds"] == 5
+    assert runtime_config["gateway"]["recent_context_budget"] == 300
+    assert runtime_config["gateway"]["current_inner_state_interval_rounds"] == 15
+    assert hot_update_bodies == [
+        {
+            "cooldown_hours": 6,
+            "skip_recent_rounds": 5,
+            "recent_context_budget": 300,
+            "current_inner_state_interval_rounds": 15,
+        }
+    ]
     assert runtime_config["reflection"]["daily_enabled"] is True
     assert runtime_config["reflection"]["memory_affect_anchor_enabled"] is False
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True

@@ -39,7 +39,44 @@ DEFAULT_WORD_MAP_STOPWORDS = {
     "this",
     "with",
     "you",
+    "active",
+    "anchor",
+    "archive",
+    "archived",
+    "comment",
+    "commitment",
+    "context",
+    "current",
+    "digested",
+    "done",
+    "dynamic",
+    "emotional_echo",
+    "event",
+    "favorite",
+    "feel",
+    "haven_favorite",
+    "memory",
+    "pending",
+    "permanent",
+    "profile_fact",
+    "project_event",
+    "recent",
+    "relationship_event",
+    "resolved",
+    "status",
+    "task_status_signal",
+    "todo",
+    "上下文",
+    "事件",
+    "内容",
+    "回忆",
+    "当前",
+    "最近",
+    "状态",
+    "记忆",
 }
+
+DEFAULT_STOPWORD_PREFIXES = ("flavor_", "profile_", "predicate_", "task_")
 
 
 @dataclass(frozen=True)
@@ -63,9 +100,18 @@ class WordMapStore:
         self.db_path = str(cfg.get("db_path") or os.path.join(state_dir, "word_map.sqlite"))
         self.stopwords = {
             _normalize_term(item)
-            for item in itertools.chain(DEFAULT_WORD_MAP_STOPWORDS, cfg.get("stopwords", []) or [])
+            for item in itertools.chain(
+                DEFAULT_WORD_MAP_STOPWORDS,
+                _identity_stopwords(config),
+                cfg.get("stopwords", []) or [],
+            )
             if _normalize_term(item)
         }
+        self.stopword_prefixes = tuple(
+            str(item).strip().lower()
+            for item in itertools.chain(DEFAULT_STOPWORD_PREFIXES, cfg.get("stopword_prefixes", []) or [])
+            if str(item).strip()
+        )
         self.private_terms = {
             _normalize_term(item)
             for item in (cfg.get("private_terms", []) or [])
@@ -299,6 +345,8 @@ class WordMapStore:
             return ""
         if term in self.stopwords or term in self.private_terms:
             return ""
+        if any(term.startswith(prefix) for prefix in self.stopword_prefixes):
+            return ""
         if len(term) < self.min_term_len or len(term) > 40:
             return ""
         if re.fullmatch(r"[a-z0-9_.:-]+", term) and len(term) < 3:
@@ -334,6 +382,17 @@ def _normalize_term(value: Any) -> str:
     text = re.sub(r"\s+", " ", text)
     text = text.strip("\"'`“”‘’[]【】()（）")
     return text.lower() if re.fullmatch(r"[A-Za-z0-9_.:/ -]+", text) else text
+
+
+def _identity_stopwords(config: dict[str, Any]) -> list[str]:
+    identity = config.get("identity", {}) if isinstance(config.get("identity", {}), dict) else {}
+    values = [
+        identity.get("ai_name"),
+        identity.get("user_name"),
+        identity.get("user_display_name"),
+    ]
+    values.extend(identity.get("user_aliases") or [])
+    return [str(item).strip() for item in values if str(item).strip()]
 
 
 def _int_between(value: Any, default: int, lower: int, upper: int) -> int:

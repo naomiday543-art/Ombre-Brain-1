@@ -7,6 +7,12 @@ def _config(tmp_path: Path, **word_map):
     return {
         "state_dir": str(tmp_path / "state"),
         "buckets_dir": str(tmp_path / "buckets"),
+        "identity": {
+            "ai_name": "Haven",
+            "user_name": "Rain",
+            "user_display_name": "小雨",
+            "user_aliases": ["宝宝"],
+        },
         "word_map": {
             "enabled": True,
             "max_terms_per_bucket": 8,
@@ -75,3 +81,28 @@ def test_word_map_private_terms_are_excluded(tmp_path):
     terms = {node["term"] for node in store.list_nodes()}
     assert "专属称呼" not in terms
     assert "称呼" in terms
+
+
+def test_word_map_excludes_structural_tags_and_identity_names(tmp_path):
+    store = WordMapStore(_config(tmp_path))
+    store.rebuild(
+        [
+            _bucket(
+                "a",
+                "Haven 和小雨讨论了咖啡风味。",
+                name="Haven 小雨 咖啡",
+                tags=["relationship_event", "emotional_echo", "profile_fact", "flavor_soft"],
+                keywords=["咖啡风味", "relationship_event"],
+                domain=["memory"],
+            ),
+        ]
+    )
+
+    terms = {node["term"] for node in store.list_nodes()}
+    assert "haven" not in terms
+    assert "小雨" not in terms
+    assert "relationship_event" not in terms
+    assert "emotional_echo" not in terms
+    assert "profile_fact" not in terms
+    assert "flavor_soft" not in terms
+    assert "咖啡风味" in terms

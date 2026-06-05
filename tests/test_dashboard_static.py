@@ -118,13 +118,19 @@ def test_dashboard_dream_background_control_uses_auto_enabled_only():
     dream_lines = [line.strip() for line in dream_block.splitlines()]
 
     assert 'id="cfg-dream-engine-enabled"' in html
+    assert 'id="cfg-dream-inject"' in html
+    assert 'id="cfg-dream-retain"' in html
     assert "document.getElementById('cfg-dream-engine-enabled').value = cfg.dream.enabled ? 'true' : 'false';" in load_block
     assert "document.getElementById('cfg-dream-enabled').value = cfg.dream.auto_enabled ? 'true' : 'false';" in load_block
+    assert "document.getElementById('cfg-dream-inject').value = cfg.dream.inject_enabled ? 'true' : 'false';" in load_block
+    assert "document.getElementById('cfg-dream-retain').value = cfg.dream.retain_after_inject ? 'true' : 'false';" in load_block
     assert "document.getElementById('cfg-dream-enabled').value = cfg.dream.enabled" not in load_block
     assert "enabled: document.getElementById('cfg-dream-engine-enabled').value === 'true'," in dream_lines
     assert "auto_enabled: document.getElementById('cfg-dream-enabled').value === 'true'," in dream_lines
     assert "enabled: document.getElementById('cfg-dream-enabled').value === 'true'," not in dream_lines
     assert "surface_enabled: document.getElementById('cfg-dream-surface').value === 'true'," in dream_lines
+    assert "inject_enabled: document.getElementById('cfg-dream-inject').value === 'true'," in dream_lines
+    assert "retain_after_inject: document.getElementById('cfg-dream-retain').value === 'true'," in dream_lines
 
 
 def test_dashboard_config_number_zero_values_are_preserved():

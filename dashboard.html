@@ -1632,6 +1632,16 @@
         <select id="cfg-dream-surface"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
       <div class="config-row">
+        <label>Gateway 注入</label>
+        <select id="cfg-dream-inject"><option value="false">关闭</option><option value="true">开启</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">开启后 Gateway 可能把一次共振梦境作为 Dream Context 给模型静默参考</div>
+      <div class="config-row">
+        <label>注入后保留</label>
+        <select id="cfg-dream-retain"><option value="false">关闭</option><option value="true">开启</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">开启后梦境注入仍只发生一次，但原梦文件会保留在梦境记录里</div>
+      <div class="config-row">
         <label>Model</label>
         <input type="text" id="cfg-dream-model" placeholder="deepseek-v4-flash" />
       </div>
@@ -3388,6 +3398,8 @@ async function loadConfig() {
     document.getElementById('cfg-dream-engine-enabled').value = cfg.dream.enabled ? 'true' : 'false';
     document.getElementById('cfg-dream-enabled').value = cfg.dream.auto_enabled ? 'true' : 'false';
     document.getElementById('cfg-dream-surface').value = cfg.dream.surface_enabled ? 'true' : 'false';
+    document.getElementById('cfg-dream-inject').value = cfg.dream.inject_enabled ? 'true' : 'false';
+    document.getElementById('cfg-dream-retain').value = cfg.dream.retain_after_inject ? 'true' : 'false';
     document.getElementById('cfg-dream-model').value = cfg.dream.model || '';
     document.getElementById('cfg-dream-url').value = cfg.dream.base_url || '';
     document.getElementById('cfg-dream-key').placeholder = '当前: ' + (cfg.dream.api_key_masked || (cfg.dream.api_ready ? '***' : '未设置'));
@@ -3471,6 +3483,8 @@ async function saveConfig(persist, persistEnv) {
       enabled: document.getElementById('cfg-dream-engine-enabled').value === 'true',
       auto_enabled: document.getElementById('cfg-dream-enabled').value === 'true',
       surface_enabled: document.getElementById('cfg-dream-surface').value === 'true',
+      inject_enabled: document.getElementById('cfg-dream-inject').value === 'true',
+      retain_after_inject: document.getElementById('cfg-dream-retain').value === 'true',
       model: document.getElementById('cfg-dream-model').value,
       base_url: document.getElementById('cfg-dream-url').value,
       daily_hour: numberValue('cfg-dream-hour', 3),

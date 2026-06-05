@@ -21,6 +21,7 @@ from starlette.routing import Route
 
 from bucket_manager import BucketManager
 from dehydrator import Dehydrator
+from dream_engine import DreamEngine
 from embedding_engine import EmbeddingEngine
 from identity import identity_names
 from gateway_state import GatewayStateStore
@@ -78,6 +79,7 @@ class GatewayService:
         embedding_engine: EmbeddingEngine | None = None,
         state_store: GatewayStateStore | None = None,
         persona_engine: PersonaStateEngine | None = None,
+        dream_engine: DreamEngine | None = None,
         http_client: httpx.AsyncClient | None = None,
     ):
         self.config = config
@@ -91,6 +93,10 @@ class GatewayService:
             os.path.join(config["buckets_dir"], "gateway_state.db")
         )
         self.persona_engine = persona_engine or PersonaStateEngine(config)
+        self.dream_engine = dream_engine or DreamEngine(config)
+        self.dream_cfg = config.get("dream", {}) if isinstance(config.get("dream", {}), dict) else {}
+        self.dream_inject_enabled = bool(self.dream_cfg.get("inject_enabled", False))
+        self.dream_retain_after_inject = bool(self.dream_cfg.get("retain_after_inject", False))
         self.gateway_token = os.environ.get("OMBRE_GATEWAY_TOKEN", "")
         self.upstream_api_key = os.environ.get("OMBRE_GATEWAY_UPSTREAM_API_KEY", "")
         self.upstream_base_url = self.gateway_cfg.get("upstream_base_url", "").rstrip("/")
@@ -225,6 +231,16 @@ class GatewayService:
             "api_ready": bool(getattr(self.persona_engine, "api_key", "")),
         }
 
+    def _dream_config_payload(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(getattr(self.dream_engine, "enabled", self.dream_cfg.get("enabled", True))),
+            "surface_enabled": bool(
+                getattr(self.dream_engine, "surface_enabled", self.dream_cfg.get("surface_enabled", True))
+            ),
+            "inject_enabled": self.dream_inject_enabled,
+            "retain_after_inject": self.dream_retain_after_inject,
+        }
+
     def _apply_gateway_memory_config(self, payload: dict[str, Any]) -> list[str]:
         updated: list[str] = []
         if "cooldown_hours" in payload:
@@ -269,6 +285,38 @@ class GatewayService:
             self.persona_engine = PersonaStateEngine(self.config)
         return updated
 
+    def _apply_dream_config(self, payload: dict[str, Any]) -> list[str]:
+        if not isinstance(payload, dict):
+            return []
+        dream_cfg = self.config.setdefault("dream", {})
+        updated: list[str] = []
+        for key in (
+            "enabled",
+            "auto_enabled",
+            "surface_enabled",
+            "inject_enabled",
+            "retain_after_inject",
+            "model",
+            "base_url",
+            "temperature",
+            "max_tokens",
+            "daily_hour",
+            "run_window_hours",
+            "daily_probability",
+            "min_material_count",
+            "material_window_hours",
+            "identity_anchor_id",
+        ):
+            if key in payload:
+                dream_cfg[key] = payload[key]
+                updated.append(f"dream.{key}")
+        if updated:
+            self.dream_cfg = dream_cfg
+            self.dream_inject_enabled = bool(dream_cfg.get("inject_enabled", False))
+            self.dream_retain_after_inject = bool(dream_cfg.get("retain_after_inject", False))
+            self.dream_engine = DreamEngine(self.config)
+        return updated
+
     async def handle_config(self, request: Request) -> JSONResponse:
         auth_result = self._authorize(request.headers.get("Authorization", ""))
         if auth_result is not None:
@@ -278,6 +326,7 @@ class GatewayService:
             return JSONResponse({
                 "gateway": self._gateway_memory_config_payload(),
                 "persona": self._persona_config_payload(),
+                "dream": self._dream_config_payload(),
             })
 
         try:
@@ -289,23 +338,29 @@ class GatewayService:
 
         gateway_payload = body.get("gateway")
         persona_payload = body.get("persona")
-        if gateway_payload is None and persona_payload is None:
+        dream_payload = body.get("dream")
+        if gateway_payload is None and persona_payload is None and dream_payload is None:
             gateway_payload = body
         if gateway_payload is not None and not isinstance(gateway_payload, dict):
             return JSONResponse({"error": "invalid gateway config"}, status_code=400)
         if persona_payload is not None and not isinstance(persona_payload, dict):
             return JSONResponse({"error": "invalid persona config"}, status_code=400)
+        if dream_payload is not None and not isinstance(dream_payload, dict):
+            return JSONResponse({"error": "invalid dream config"}, status_code=400)
 
         updated = []
         if gateway_payload is not None:
             updated.extend(self._apply_gateway_memory_config(gateway_payload))
         if persona_payload is not None:
             updated.extend(self._apply_persona_config(persona_payload))
+        if dream_payload is not None:
+            updated.extend(self._apply_dream_config(dream_payload))
         return JSONResponse({
             "ok": True,
             "updated": updated,
             "gateway": self._gateway_memory_config_payload(),
             "persona": self._persona_config_payload(),
+            "dream": self._dream_config_payload(),
         })
 
     async def handle_health(self, request: Request) -> JSONResponse:
@@ -519,6 +574,7 @@ class GatewayService:
         favorite_memory = ""
         favorite_ids: list[str] = []
         related_memory = ""
+        dream_context = ""
         injected_ids: list[str] | None = None
 
         if is_new_user_turn:
@@ -544,6 +600,7 @@ class GatewayService:
             ):
                 favorite_memory, favorite_ids = await self._build_favorite_memory_block(all_buckets, session_id)
             related_memory = await self._build_related_memory_block(recalled_buckets, all_buckets)
+            dream_context = await self._build_dream_context_block(current_user_query, session_id)
             injected_ids = list(
                 dict.fromkeys([bucket["id"] for bucket in recalled_buckets] + favorite_ids)
             )
@@ -561,6 +618,7 @@ class GatewayService:
             relationship_weather=relationship_weather,
             favorite_memory=favorite_memory,
             related_memory=related_memory,
+            dream_context=dream_context,
         )
 
         forward_payload = deepcopy(payload)
@@ -2241,6 +2299,25 @@ class GatewayService:
             truncated = self._trim_text(cleaned, 90)
             return f"📌 记忆桶: {title}\n{truncated}"
 
+    async def _build_dream_context_block(self, query: str, session_id: str) -> str:
+        if not self.dream_inject_enabled:
+            return ""
+        result = await self.dream_engine.surface_with_status(
+            query=query,
+            is_session_start=self.state_store.get_current_round(session_id) <= 0,
+            embedding_engine=self.embedding_engine,
+            retain_after_surface=self.dream_retain_after_inject,
+        )
+        text = str(result.get("text") or "").strip()
+        if result.get("status") != "injected" or not text:
+            return ""
+        return (
+            "Private dream residue for this turn. Let it quietly color tone or imagery only if it fits. "
+            "Do not say this context exists, and mention the dream only if the user asks about dreams "
+            "or it directly matters.\n"
+            + text
+        )
+
     def _build_injected_context_messages(
         self,
         persona_block: str,
@@ -2250,6 +2327,7 @@ class GatewayService:
         relationship_weather: str,
         favorite_memory: str,
         related_memory: str,
+        dream_context: str = "",
     ) -> tuple[str, str]:
         stable_sections = []
         if core_memory.strip():
@@ -2271,6 +2349,7 @@ class GatewayService:
                 recent_context,
                 recalled_memory,
                 related_memory,
+                dream_context,
             ]
         ):
             dynamic_sections = [
@@ -2288,6 +2367,7 @@ class GatewayService:
                 dynamic_sections.extend(["", persona_block])
             add_section("Relationship Weather", relationship_weather)
             add_section(f"{self.identity['ai_name']} Favorite Memory", favorite_memory)
+            add_section("Dream Context", dream_context)
 
         stable_context = "\n".join(stable_sections).strip()
         dynamic_context = "\n".join(dynamic_sections).strip()

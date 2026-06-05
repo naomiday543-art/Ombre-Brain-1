@@ -749,6 +749,7 @@ async def test_gateway_builds_favorite_memory_block_and_injects_section(test_con
         recent_context="",
         recalled_memory="",
         related_memory="",
+        dream_context="",
     )
 
     assert favorite_ids == [favorite_id]

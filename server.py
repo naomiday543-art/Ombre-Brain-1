@@ -3285,6 +3285,8 @@ async def api_config_get(request):
             "enabled": dream_engine.enabled,
             "auto_enabled": dream_engine.auto_enabled,
             "surface_enabled": dream_engine.surface_enabled,
+            "inject_enabled": _bool_value(dream_cfg.get("inject_enabled"), False),
+            "retain_after_inject": _bool_value(dream_cfg.get("retain_after_inject"), False),
             "model": dream_engine.model,
             "base_url": dream_engine.base_url,
             "api_key_masked": _mask_key(dream_engine.api_key),
@@ -3475,10 +3477,6 @@ async def api_config_update(request):
             persona_engine = PersonaStateEngine(config)
             gateway_hot_update_payload["persona"] = persona_gateway_payload
 
-    hot_update_status = await _hot_update_gateway_config(gateway_hot_update_payload)
-    if hot_update_status:
-        updated.append(hot_update_status)
-
     # --- Reflection config ---
     if "reflection" in body:
         r = body["reflection"]
@@ -3517,6 +3515,8 @@ async def api_config_update(request):
             "enabled",
             "auto_enabled",
             "surface_enabled",
+            "inject_enabled",
+            "retain_after_inject",
             "model",
             "base_url",
             "temperature",
@@ -3531,6 +3531,12 @@ async def api_config_update(request):
             if key in d:
                 dream_cfg[key] = d[key]
                 updated.append(f"dream.{key}")
+        dream_gateway_payload = {}
+        for key in ("enabled", "surface_enabled", "inject_enabled", "retain_after_inject"):
+            if key in d:
+                dream_gateway_payload[key] = dream_cfg[key]
+        if dream_gateway_payload:
+            gateway_hot_update_payload["dream"] = dream_gateway_payload
         if "api_key" in d and d["api_key"]:
             dream_cfg["api_key"] = str(d["api_key"])
             os.environ["OMBRE_DREAM_API_KEY"] = dream_cfg["api_key"]
@@ -3541,6 +3547,10 @@ async def api_config_update(request):
         if "model" in d and dream_cfg.get("model"):
             os.environ["OMBRE_DREAM_MODEL"] = str(dream_cfg["model"])
         dream_engine = DreamEngine(config)
+
+    hot_update_status = await _hot_update_gateway_config(gateway_hot_update_payload)
+    if hot_update_status:
+        updated.append(hot_update_status)
 
     # --- Persist to config.yaml if requested ---
     if body.get("persist", False):
@@ -3615,6 +3625,8 @@ async def api_config_update(request):
                     "enabled",
                     "auto_enabled",
                     "surface_enabled",
+                    "inject_enabled",
+                    "retain_after_inject",
                     "model",
                     "base_url",
                     "temperature",

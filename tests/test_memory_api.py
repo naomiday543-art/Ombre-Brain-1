@@ -1036,6 +1036,8 @@ async def test_config_get_reports_effective_dream_engine_values(monkeypatch):
                 "enabled": False,
                 "auto_enabled": True,
                 "surface_enabled": False,
+                "inject_enabled": True,
+                "retain_after_inject": True,
                 "model": "config-model",
                 "base_url": "https://config.example",
             },
@@ -1060,6 +1062,8 @@ async def test_config_get_reports_effective_dream_engine_values(monkeypatch):
     assert payload["dream"]["enabled"] is True
     assert payload["dream"]["auto_enabled"] is False
     assert payload["dream"]["surface_enabled"] is True
+    assert payload["dream"]["inject_enabled"] is True
+    assert payload["dream"]["retain_after_inject"] is True
     assert payload["dream"]["model"] == "env-model"
     assert payload["dream"]["base_url"] == "https://env.example"
     assert payload["dream"]["api_key_masked"] == "env-...cret"
@@ -1295,6 +1299,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "enabled": True,
             "auto_enabled": True,
             "surface_enabled": True,
+            "inject_enabled": False,
+            "retain_after_inject": False,
             "model": "runtime-old",
             "base_url": "https://api.deepseek.com",
         },
@@ -1354,7 +1360,12 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "model": "persona-new",
                     "base_url": "https://persona-new.example",
                 },
-                "dream": {"auto_enabled": False, "model": "dream-new"},
+                "dream": {
+                    "auto_enabled": False,
+                    "inject_enabled": True,
+                    "retain_after_inject": True,
+                    "model": "dream-new",
+                },
                 "gateway": {
                     "cooldown_hours": 6,
                     "skip_recent_rounds": 5,
@@ -1385,6 +1396,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["persona"]["base_url"] == "https://persona-new.example"
     assert runtime_config["dream"]["model"] == "dream-new"
     assert runtime_config["dream"]["auto_enabled"] is False
+    assert runtime_config["dream"]["inject_enabled"] is True
+    assert runtime_config["dream"]["retain_after_inject"] is True
     assert runtime_config["gateway"]["cooldown_hours"] == 6
     assert runtime_config["gateway"]["skip_recent_rounds"] == 5
     assert runtime_config["gateway"]["recent_context_budget"] == 300
@@ -1401,6 +1414,10 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                 "enabled": False,
                 "model": "persona-new",
                 "base_url": "https://persona-new.example",
+            },
+            "dream": {
+                "inject_enabled": True,
+                "retain_after_inject": True,
             },
         }
     ]

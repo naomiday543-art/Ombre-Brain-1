@@ -777,20 +777,22 @@ limit: int = 20
 开头背景、命中词附近语境、结尾结果等。
 
 ## feeling
-当时感受或机自我反思。
+当时感受。
+
+## assistant_reflection
+Haven 的理解、确认、喜欢原因、以后怎么回应。
 
 ## followup
 后续选择、承诺、待办。
 
 ### affect_anchor
-> 具体情境
 > 和弦 -> 情绪移动
 
 ### 喜欢它的原因
 为什么这条是 favorite。
 ```
 
-旧格式正文没有这些标题时，会整体索引为 `body`；如果正文已有 `### affect_anchor` 或 `### 喜欢它的原因`，会单独拆成对应 moment。`metadata.comments` 会索引为 `comment`，保留年轮作者、kind、valence/arousal 等元信息。`haven_favorite / flavor_* / anchor / pinned` 等仍作为 bucket 级温度标记写进 moment metadata，不会降级成普通文本。
+旧格式正文没有这些标题时，会整体索引为 `body`；如果正文已有 `### moment / ### assistant_reflection / ### affect_anchor / ### 喜欢它的原因`，会单独拆成对应 moment。`assistant_reflection` 会作为 reflection/context moment，不应直接当作用户画像事实；`affect_anchor` 只承载和弦、温度、诗性标记，不承载事实。`metadata.comments` 会索引为 `comment`，保留年轮作者、kind、valence/arousal 等元信息。`haven_favorite / flavor_* / anchor / pinned` 等仍作为 bucket 级温度标记写进 moment metadata，不会降级成普通文本。
 
 索引同时生成 deterministic moment edges：
 
@@ -1143,7 +1145,7 @@ C:\Python313\python.exe -m pytest tests\test_gateway.py tests\test_memory_api.py
 
 - 完整 entity / 知识图谱。
 - Memory Edge 同步到 Supabase：暂时不做；Supabase 目前只作为备用同步层。
-- `affect_anchor` 独立解析、筛选、可视化和检索。
+- 召回候选过滤模型：如果 Query Planner / Word Map Lite 诊断显示短 query 补搜仍有噪音，再加严格 JSON 的 keep/drop 候选筛选。
 - 通用化部署文案继续减少个性化示例；运行时 prompt 已优先读 `identity`。
 
 ## License

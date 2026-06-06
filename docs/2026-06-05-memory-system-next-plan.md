@@ -19,6 +19,29 @@ This is not a rewrite. The goal is to make the existing memory stack easier to r
 
 This means the next change should clarify boundaries before adding more automatic behavior.
 
+## 2026-06-06 Status Update
+
+The current slice is complete on `feature/memory-diffusion-p0`.
+
+- Private Alias is live as a deployment-private overlay, not a template feature. The VPS uses `/state/private_identity_semantics.yaml`, derived from the previous `reflection.identity_role_edges`. `config.example.yaml` keeps `identity_semantics` empty. The rebuilt live index has `8` canonical nodes, `12` aliases, and `21` evidence links.
+- Word Map Lite and private identity diagnostics are implemented as dashboard/manual rebuild tooling. They do not inject anything into Gateway by themselves.
+- `scripts/migrate_affect_anchor_sections.py` migrates old bucket structure without rewriting memory meaning:
+  - facts move to `### moment`
+  - Haven interpretations such as `Haven 由此确认...` move to `### assistant_reflection`
+  - `### affect_anchor` keeps only chords, `含义：...`, and temperature/poetic markers
+  - duplicate short facts are skipped when already covered by longer body text
+- The migration also handles the unheaded-body case where a reflection paragraph was written in the main body without a `### assistant_reflection` heading.
+- Live VPS migration was applied after dry-run review:
+  - first `2c4b82ee93ba` and `reflection_daily_2026-06-05`
+  - then `65023203392f`
+  - then the remaining 53 default-scope buckets
+- Final verification:
+  - default dry-run: `0` remaining
+  - `--include-archive` dry-run: `0` remaining
+  - every applied bucket reported `written=true`, `embedding_refreshed=true`, and `moment_index_refreshed=true`
+  - `breath(query="激动哭")` hits `2c4b82ee93ba`
+  - `breath(query="记忆改版 模型更新")` hits `65023203392f` and returns the new `### assistant_reflection`
+
 ## Memory Boundaries
 
 ### `pinned` / `protected`
@@ -128,6 +151,8 @@ Use real examples that previously behaved differently under manual keyword searc
 - Other long mixed messages from recent use.
 
 ### 4. Optional: add Word Map Lite
+
+Status: implemented as a derived diagnostic index plus private identity alias view. It remains non-injecting.
 
 This borrows the useful part of Paw Memory's word map without importing its whole design.
 
@@ -371,7 +396,7 @@ The first code slice should be:
 5. Merge, score, and gate with existing policy.
 6. Add debug output.
 
-Do not implement Word Map Lite or candidate filter model in this first slice.
+Do not implement the candidate filter model in this first slice.
 
 ## Later Implementation Slice
 
@@ -381,9 +406,9 @@ After Query Planner has real-query evidence:
 2. Add Profile Fact page.
 3. Add manual-confirm profile fact proposals.
 4. Add manual-confirm anchor proposals.
-5. Consider Word Map Lite if planner debug shows repeated term-expansion misses.
+5. Use Word Map Lite diagnostics if planner debug shows repeated term-expansion misses.
 
-Items 1 to 4 are now implemented; Word Map Lite remains conditional.
+Items 1 to 5 are now implemented; the candidate filter model remains optional.
 
 ## Guardrails
 

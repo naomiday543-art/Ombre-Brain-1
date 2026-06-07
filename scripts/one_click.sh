@@ -426,6 +426,59 @@ embedding:
   enabled: ${embedding_enabled}
   model: $(yaml_quote "${embedding_model}")
   base_url: $(yaml_quote "${embedding_base_url}")
+  max_chars: 6000
+  query_instruction: "Given a memory search query, retrieve relevant long-term memory passages."
+  document_instruction: ""
+
+reranker:
+  enabled: ${embedding_enabled}
+  model: "Qwen/Qwen3-Reranker-4B"
+  base_url: ""
+  candidate_limit: 20
+  score_weight: 0.65
+  timeout_seconds: 12
+
+memory_write_gate:
+  enabled: true
+  auto_sources:
+    - "operit"
+    - "workflow"
+    - "worker"
+    - "auto"
+  pending_threshold: 0.42
+  grow_threshold: 0.72
+  duplicate_similarity: 0.88
+  repeat_similarity: 0.82
+  repeat_promote_count: 2
+  candidate_log: "memory_write_candidates.jsonl"
+  max_recent_candidates: 120
+
+recall:
+  query_resurface_enabled: false
+
+word_map:
+  enabled: false
+  max_terms_per_bucket: 16
+  edge_top_k: 10
+  min_term_len: 2
+  stopwords: []
+  private_terms: []
+  stopword_prefixes: []
+
+identity_semantics:
+  enabled: false
+  private_config_path: ""
+  min_confidence: 0.78
+  evidence_tags:
+    - "profile_fact"
+    - "haven_favorite"
+    - "favorite_memory"
+
+moment_annotations:
+  enabled: true
+  max_summary_chars: 160
+  max_evidence_spans: 3
+  max_evidence_chars: 120
 
 gateway:
   host: "0.0.0.0"
@@ -457,6 +510,14 @@ gateway:
   portrait_memory_budget: 360
   portrait_memory_max_sources: 8
   portrait_memory_include_anchors: true
+  query_planner_enabled: true
+  query_planner_model: ""
+  query_planner_min_chars: 16
+  query_planner_max_queries: 3
+  query_planner_max_tokens: 360
+  memory_detail_recall_enabled: false
+  memory_detail_recall_max_ids: 3
+  memory_detail_recall_budget: 1200
   relationship_weather_budget: 220
   favorite_memory_budget: 180
   favorite_memory_max_cards: 1
@@ -466,6 +527,38 @@ gateway:
   favorite_memory_interval_rounds: 0
   upstream_key_cooldown_seconds: 300
 ${gateway_upstreams_yaml}
+
+memory_diffusion:
+  enabled: true
+  max_hops: 2
+  top_k: 4
+  min_activation: 0.18
+  hop_decays:
+    - 0.8
+    - 0.6
+    - 0.4
+    - 0.25
+  decay: 0.55
+  include_incoming: true
+  max_paths_per_hit: 3
+  chain_walk_enabled: false
+  chain_max_hops: 6
+  chain_min_strength: 0.2
+  chain_min_confidence: 0.72
+  chain_min_relation_priority: 60
+  chain_max_frontier: 24
+  chain_continue_relation_types:
+    - "same_event"
+    - "context_of"
+    - "precedes"
+    - "previous_context"
+    - "next_context"
+    - "updates"
+    - "evidenced_by"
+    - "reflects_on"
+  relation_type_weights:
+    same_event: 1.15
+    context_of: 1.1
 
 persona:
   enabled: true
@@ -517,6 +610,8 @@ dream:
   enabled: ${dream_enabled}
   auto_enabled: ${dream_enabled}
   surface_enabled: true
+  inject_enabled: false
+  retain_after_inject: false
   base_url: $(yaml_quote "${dream_base_url}")
   model: $(yaml_quote "${dream_model}")
   thinking_mode: "disabled"
@@ -724,6 +819,9 @@ print_client_guide() {
     printf 'Gateway / OpenAI-compatible: 未部署；客户端请使用 MCP 工具模式。\n'
   fi
   printf '会话头: 如果客户端支持自定义 header，可加 X-Ombre-Session-Id: main\n'
+  printf '\n新版使用提示：新窗口用 breath(mode="handoff")；具体事件用 breath(query="关键词或原句")。\n'
+  printf '刚刚/上一句看 Gateway 的 Just Now Chat Context；暗房外部只暴露 darkroom_enter。\n'
+  printf '完整工具说明见 docs/Tool Guide.md；Dashboard 桶列表可批量选择并删除普通记忆桶。\n'
 
   case "${DEPLOY_TARGET}" in
     vps)
@@ -768,6 +866,38 @@ EOF
   Not deployed. Use MCP tool mode instead.
 EOF
   fi
+  cat >> connection_guide.txt <<EOF
+
+Current mainline usage notes:
+  New window / wakeup / room switch:
+    breath(mode="handoff")
+    or breath(is_session_start=true)
+
+  Specific old event, preference, boundary, project, or remembered phrase:
+    breath(query="keywords or original phrase")
+
+  Just now / previous message / recently said password:
+    Prefer Gateway Just Now Chat Context. Do not default to breath(query="just now").
+
+  Profile facts:
+    Use profile_fact(...) only with evidence bucket or evidence moment.
+    Daily Portrait Maintainer writes state/portrait_state.json; it does not write profile_fact automatically.
+
+  Darkroom:
+    External client tool lists should expose only darkroom_enter(note=...).
+    It does not echo note bodies; handoff shows only Darkroom Door status.
+
+  Dream Context:
+    dream.surface_enabled controls breath() dream surfacing.
+    dream.inject_enabled controls Gateway Dream Context injection and defaults to false.
+
+  Dashboard:
+    Bucket list supports bulk select -> select current filter -> delete selected.
+    Bulk delete skips protected, pinned, anchor, and permanent buckets, and requires typing DELETE.
+
+Tool copy block:
+  See docs/Tool Guide.md and paste the current copy block into external clients.
+EOF
   printf '\n已写入 connection_guide.txt\n'
 }
 
@@ -1080,7 +1210,7 @@ first_deploy() {
   if prompt_yes_no '启用 embedding 语义检索吗' 'y'; then
     embedding_enabled="true"
     embedding_base_url="$(prompt_text 'embedding base_url' 'https://api.siliconflow.cn/v1')"
-    embedding_model="$(prompt_text 'embedding 模型' 'Qwen/Qwen3-Embedding-0.6B')"
+    embedding_model="$(prompt_text 'embedding 模型' 'Qwen/Qwen3-Embedding-4B')"
     embedding_key="$(prompt_secret 'embedding key（OMBRE_EMBEDDING_API_KEY，建议必填）' true)"
   else
     embedding_enabled="false"
@@ -1184,9 +1314,19 @@ choose_compose_file() {
 update_version() {
   select_deploy_target_for_task "更新版本"
   if [[ "${DEPLOY_TARGET}" == "python" ]]; then
-    update_python_runtime
+    ensure_python_tools || return 1
   else
     choose_compose_file
+    ensure_tools || return 1
+  fi
+  if prompt_yes_no '更新前备份记忆桶吗（包含 buckets/data、state、config.yaml、.env）' 'y'; then
+    backup_current_deployment "pre_update" || return 1
+  else
+    printf '已跳过更新前备份。\n'
+  fi
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    update_python_runtime
+  else
     "${SCRIPT_DIR}/update_deploy.sh"
   fi
 }
@@ -1249,6 +1389,187 @@ run_target_python_stdin() {
   fi
 }
 
+safe_backup_label() {
+  local value="${1:-manual}"
+  value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+  value="$(printf '%s' "${value}" | sed -E 's/[^a-z0-9._-]+/_/g; s/^_+//; s/_+$//')"
+  printf '%s\n' "${value:-manual}"
+}
+
+backup_current_deployment() {
+  local label stamp archive_name archive tmp_archive
+  label="$(safe_backup_label "${1:-manual}")"
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  archive_name="ombre_backup_${label}_${stamp}.tar.gz"
+
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    local items=()
+    archive="state/backups/${archive_name}"
+    tmp_archive="/tmp/${archive_name}"
+    mkdir -p state/backups
+    [[ -d buckets ]] && items+=("buckets")
+    [[ -d state ]] && items+=("state")
+    [[ -f config.yaml ]] && items+=("config.yaml")
+    [[ -f .env ]] && items+=(".env")
+    if (( ${#items[@]} == 0 )); then
+      printf '没有找到可备份的 buckets/state/config.yaml/.env。\n'
+      return 1
+    fi
+    tar --exclude='state/backups' --exclude='./state/backups' -czf "${tmp_archive}" "${items[@]}" && mv "${tmp_archive}" "${archive}" || {
+      rm -f "${tmp_archive}"
+      printf '备份失败。\n'
+      return 1
+    }
+    printf '已写入备份：%s\n' "${archive}"
+  else
+    archive="/state/backups/${archive_name}"
+    run_target_shell "set -e; mkdir -p /state/backups; items=''; for item in /data /state /app/config.yaml /app/.env; do [ -e \"\$item\" ] && items=\"\$items \$item\"; done; if [ -z \"\$items\" ]; then echo '没有找到可备份的 /data /state /app/config.yaml /app/.env'; exit 1; fi; tar --exclude=/state/backups --exclude=state/backups -czf '/tmp/${archive_name}' \$items; cp '/tmp/${archive_name}' '${archive}'" || return 1
+    backup_file ".env"
+    backup_file "config.yaml"
+    backup_file "${COMPOSE_FILE}"
+    printf '已写入容器数据备份：%s\n' "${archive}"
+    printf '如果当前目录有 .env / config.yaml / compose，也已在宿主机备份。\n'
+  fi
+}
+
+backup_current_menu() {
+  select_deploy_target_for_task "备份当前部署"
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    ensure_python_tools || return 1
+  else
+    choose_compose_file
+    ensure_tools || return 1
+  fi
+  backup_current_deployment "manual"
+}
+
+backup_list_archives() {
+  run_target_python_stdin <<'PY'
+from datetime import datetime
+from pathlib import Path
+
+base = Path("/state/backups") if Path("/state").exists() else Path("state/backups")
+suffixes = (".tar.gz", ".tgz", ".zip")
+if not base.exists():
+    raise SystemExit(0)
+paths = [
+    path
+    for path in base.iterdir()
+    if path.is_file() and any(path.name.endswith(suffix) for suffix in suffixes)
+]
+paths.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+for path in paths:
+    stat = path.stat()
+    mtime = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"{path.name}\t{stat.st_size}\t{mtime}")
+PY
+}
+
+format_bytes_kib() {
+  local bytes="${1:-0}"
+  if ! [[ "${bytes}" =~ ^[0-9]+$ ]]; then
+    printf '? KiB'
+    return
+  fi
+  printf '%s KiB' "$(((bytes + 1023) / 1024))"
+}
+
+safe_backup_archive_name() {
+  local name="$1"
+  [[ "${name}" =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  case "${name}" in
+    *.tar.gz|*.tgz|*.zip) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+delete_backup_archive() {
+  local name="$1"
+  safe_backup_archive_name "${name}" || {
+    printf '备份包文件名不安全，拒绝删除：%s\n' "${name}"
+    return 1
+  }
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    rm -f -- "state/backups/${name}"
+  else
+    run_target_shell "rm -f -- '/state/backups/${name}'" || return 1
+  fi
+}
+
+delete_backup_archives_menu() {
+  select_deploy_target_for_task "删除旧备份包"
+  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
+    ensure_python_tools || return 1
+  else
+    choose_compose_file
+    ensure_tools || return 1
+  fi
+
+  local list_output rows=() names=()
+  if ! list_output="$(backup_list_archives)"; then
+    printf '读取备份列表失败。\n'
+    return 1
+  fi
+  if [[ -z "${list_output}" ]]; then
+    printf '没有找到备份包。\n'
+    return 0
+  fi
+  mapfile -t rows <<< "${list_output}"
+
+  line
+  printf '旧备份包\n'
+  local i=1 row name bytes mtime
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r name bytes mtime <<< "${row}"
+    [[ -n "${name}" ]] || continue
+    names+=("${name}")
+    printf '%2d. %-48s %10s  %s\n' "${i}" "${name}" "$(format_bytes_kib "${bytes}")" "${mtime}"
+    i=$((i + 1))
+  done
+  if (( ${#names[@]} == 0 )); then
+    printf '没有找到备份包。\n'
+    return 0
+  fi
+
+  local raw parts=() selected=() part idx confirm
+  if ! read -r -p '输入要删除的序号（多个用英文逗号，0 取消）：' raw; then
+    printf '\n'
+    return 0
+  fi
+  raw="${raw//[[:space:]]/}"
+  [[ -z "${raw}" || "${raw}" == "0" ]] && return 0
+  IFS=',' read -r -a parts <<< "${raw}"
+  for part in "${parts[@]}"; do
+    if ! [[ "${part}" =~ ^[0-9]+$ ]]; then
+      printf '不是有效序号：%s\n' "${part}"
+      return 1
+    fi
+    idx=$((part))
+    if (( idx < 1 || idx > ${#names[@]} )); then
+      printf '序号超出范围：%s\n' "${part}"
+      return 1
+    fi
+    selected+=("${names[$((idx - 1))]}")
+  done
+
+  printf '将删除这些备份包：\n'
+  for name in "${selected[@]}"; do
+    printf '  %s\n' "${name}"
+  done
+  if ! read -r -p '输入 DELETE 确认删除：' confirm; then
+    printf '\n'
+    return 0
+  fi
+  if [[ "${confirm}" != "DELETE" ]]; then
+    printf '确认词不匹配，已取消。\n'
+    return 0
+  fi
+  for name in "${selected[@]}"; do
+    delete_backup_archive "${name}" || return 1
+    printf '已删除备份包：%s\n' "${name}"
+  done
+}
+
 migration_inspect() {
   migration_prepare_target "原版迁移检查" || return 1
   run_target_python_stdin <<'PY'
@@ -1302,34 +1623,7 @@ PY
 
 migration_backup() {
   migration_prepare_target "原版迁移备份" || return 1
-  local stamp archive
-  stamp="$(date +%Y%m%d_%H%M%S)"
-  if [[ "${DEPLOY_TARGET}" == "python" ]]; then
-    archive="state/backups/ombre_migration_${stamp}.tar.gz"
-    local tmp_archive items=()
-    tmp_archive="/tmp/ombre_migration_${stamp}.tar.gz"
-    mkdir -p state/backups
-    [[ -d buckets ]] && items+=("buckets")
-    [[ -d state ]] && items+=("state")
-    [[ -f config.yaml ]] && items+=("config.yaml")
-    [[ -f .env ]] && items+=(".env")
-    if (( ${#items[@]} == 0 )); then
-      printf '没有找到可备份的 buckets/state/config.yaml/.env。\n'
-      return 1
-    fi
-    tar --exclude='state/backups' -czf "${tmp_archive}" "${items[@]}" && mv "${tmp_archive}" "${archive}" || {
-      printf '备份失败。\n'
-      return 1
-    }
-    printf '已写入备份：%s\n' "${archive}"
-  else
-    archive="/state/backups/ombre_migration_${stamp}.tar.gz"
-    run_target_shell "mkdir -p /state/backups && tar --exclude=/state/backups -czf /tmp/ombre_migration_${stamp}.tar.gz /data /state /app/config.yaml && cp /tmp/ombre_migration_${stamp}.tar.gz '${archive}'" || return 1
-    backup_file ".env"
-    backup_file "${COMPOSE_FILE}"
-    printf '已写入容器数据备份：%s\n' "${archive}"
-    printf '如果当前目录有 .env / compose，也已在宿主机备份。\n'
-  fi
+  backup_current_deployment "migration"
 }
 
 migration_backup_source_dir() {
@@ -1551,6 +1845,84 @@ migration_menu() {
   done
 }
 
+bucket_format_validate_path() {
+  local path="$1"
+  if [[ "${path}" == *"'"* ]]; then
+    printf '路径不能包含单引号：%s\n' "${path}"
+    return 1
+  fi
+}
+
+bucket_format_plan() {
+  migration_prepare_target "记忆桶格式转换预演" || return 1
+  local state_dir scope body_mode include_archive output output_md
+  state_dir="$(migration_state_dir)"
+  scope="$(prompt_text '扫描范围 ordinary/core/feel/all' 'all')"
+  case "${scope}" in
+    ordinary|core|feel|all) ;;
+    *) printf '扫描范围只能是 ordinary/core/feel/all。\n'; return 1 ;;
+  esac
+  body_mode="$(prompt_text '无标题正文处理 skip/title/first_sentence' 'skip')"
+  case "${body_mode}" in
+    skip|title|first_sentence) ;;
+    *) printf '无标题正文处理只能是 skip/title/first_sentence。\n'; return 1 ;;
+  esac
+  include_archive=""
+  if prompt_yes_no '包含 archive 桶吗' 'y'; then
+    include_archive="--include-archive"
+  fi
+  output="$(prompt_text 'JSON plan 输出路径' "${state_dir}/affect_anchor_plan.json")"
+  output_md="$(prompt_text 'Markdown 审阅输出路径' "${state_dir}/affect_anchor_plan.md")"
+  bucket_format_validate_path "${state_dir}" || return 1
+  bucket_format_validate_path "${output}" || return 1
+  bucket_format_validate_path "${output_md}" || return 1
+
+  run_target_shell "mkdir -p '${state_dir}' && PYTHONIOENCODING=utf-8 python scripts/migrate_affect_anchor_sections.py --scope '${scope}' ${include_archive} --body-only-moment '${body_mode}' --output '${output}' --output-md '${output_md}' --preview-chars 1200" || return 1
+  printf '已生成 JSON plan：%s\n' "${output}"
+  printf '已生成 Markdown 审阅：%s\n' "${output_md}"
+  printf '请先看审阅文件，确认后再回到本菜单选择“应用”。\n'
+}
+
+bucket_format_apply() {
+  migration_prepare_target "应用记忆桶格式转换" || return 1
+  local state_dir plan output stamp
+  state_dir="$(migration_state_dir)"
+  plan="$(prompt_text '已审阅的 JSON plan 路径' "${state_dir}/affect_anchor_plan.json")"
+  bucket_format_validate_path "${state_dir}" || return 1
+  bucket_format_validate_path "${plan}" || return 1
+  printf '这一步会按 plan 改写 bucket 正文，并刷新相关 embedding / moment 索引。\n'
+  if ! prompt_yes_no '确认已经看过审阅文件，可以应用吗' 'n'; then
+    return 0
+  fi
+  backup_current_deployment "pre_bucket_format" || return 1
+  stamp="$(date +%Y%m%d_%H%M%S)"
+  output="${state_dir}/affect_anchor_apply_${stamp}.json"
+  run_target_shell "PYTHONIOENCODING=utf-8 python scripts/migrate_affect_anchor_sections.py --from-plan '${plan}' --apply --yes --output '${output}'" || return 1
+  printf '格式转换结果：%s\n' "${output}"
+  printf '如果之后召回不稳，再跑“向量库相关 -> 补缺失向量”或“重建整个向量库”。\n'
+}
+
+bucket_format_menu() {
+  local choice
+  while true; do
+    line
+    printf '==== 记忆桶格式转换 ====\n'
+    printf '1. 预演并生成审阅文件\n'
+    printf '2. 应用已审阅的 plan\n'
+    printf '0. 返回上一级\n'
+    if ! read -r -p '输入（0-2）：' choice; then
+      printf '\n'
+      return 0
+    fi
+    case "${choice}" in
+      1) bucket_format_plan; pause ;;
+      2) bucket_format_apply; pause ;;
+      0) return 0 ;;
+      *) printf '请输入 0-2。\n' ;;
+    esac
+  done
+}
+
 vector_prepare_target() {
   local title="$1"
   select_deploy_target_for_task "${title}"
@@ -1722,11 +2094,14 @@ main_menu() {
     printf '1. 首次部署\n'
     printf '2. 更新版本\n'
     printf '3. 错误排查\n'
-    printf '4. 向量库相关\n'
-    printf '5. 安装短命令 ob\n'
-    printf '6. 从原版 Ombre-Brain 迁移\n'
+    printf '4. 备份当前部署\n'
+    printf '5. 删除旧备份包\n'
+    printf '6. 记忆桶格式转换\n'
+    printf '7. 向量库相关\n'
+    printf '8. 安装短命令 ob\n'
+    printf '9. 从原版 Ombre-Brain 迁移\n'
     printf '0. 退出\n'
-    if ! read -r -p '输入（0-6）：' choice; then
+    if ! read -r -p '输入（0-9）：' choice; then
       printf '\n'
       exit 0
     fi
@@ -1734,11 +2109,14 @@ main_menu() {
       1) first_deploy; pause ;;
       2) update_version; pause ;;
       3) run_doctor; pause ;;
-      4) vector_menu ;;
-      5) install_shortcut; pause ;;
-      6) migration_menu ;;
+      4) backup_current_menu; pause ;;
+      5) delete_backup_archives_menu; pause ;;
+      6) bucket_format_menu ;;
+      7) vector_menu ;;
+      8) install_shortcut; pause ;;
+      9) migration_menu ;;
       0) exit 0 ;;
-      *) printf '请输入 0-6。\n' ;;
+      *) printf '请输入 0-9。\n' ;;
     esac
   done
 }

@@ -41,6 +41,28 @@ ombre_default_health_url() {
   esac
 }
 
+ombre_compose_service_exists() {
+  local compose_file="${1}"
+  local service="${2}"
+  ombre_compose -f "${compose_file}" config --services 2>/dev/null | grep -Fxq "${service}"
+}
+
+ombre_compose_service_health_url() {
+  local compose_file="${1}"
+  local service="${2}"
+  local internal_port="${3}"
+  local fallback_url="${4}"
+  local mapped host_port
+
+  mapped="$(ombre_compose -f "${compose_file}" port "${service}" "${internal_port}" 2>/dev/null | tail -n 1 || true)"
+  host_port="$(printf '%s\n' "${mapped}" | sed -nE 's/.*:([0-9]+)$/\1/p' | tail -n 1)"
+  if [[ -n "${host_port}" ]]; then
+    printf 'http://127.0.0.1:%s/health\n' "${host_port}"
+  else
+    printf '%s\n' "${fallback_url}"
+  fi
+}
+
 ombre_wait_for_health() {
   local url="${1}"
   local tries="${2:-30}"

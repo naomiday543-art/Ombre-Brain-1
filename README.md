@@ -1,16 +1,16 @@
 # Ombre Brain - Haven/Rain Fork
 
-这是 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 的二次开发版本。原版是一套给 Claude 使用的长期情绪记忆 MCP；这个 fork 在原版的 Markdown bucket、情绪坐标、遗忘曲线、MCP 工具、Dashboard、向量检索基础上，增加了 Gateway 自动注入、Memory Moment/Edge 图召回、Persona State、Portrait/Handoff、长期锚点、关系天气、年轮评论、whisper、Darkroom、跨窗口短时上下文、Supabase 同步和 ChatGPT Connector OAuth。
+这是 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 的二次开发版本。原版是一套给 Claude 使用的长期情绪记忆 MCP；这个 fork 在原版的 Markdown bucket、情绪坐标、遗忘曲线、MCP 工具、Dashboard、向量检索基础上，增加了 Gateway 自动注入、Memory Moment/Edge 图召回、Word Map Lite、Persona State、Portrait/Handoff、profile_fact 事实画像、长期锚点、关系天气、年轮评论、whisper、Darkroom、跨窗口短时上下文、Night Dream / Dream Context、自动写入门卫、Supabase 同步和 ChatGPT / Claude Connector OAuth。
 
 本 README 以本 fork 的运行方式为准。原版 Docker Hub 预构建镜像、`docker-compose.user.yml`、Render / Zeabur 快速部署方式不包含这些 fork 能力，因此这里不再保留原版快速部署教程。
 
 ## 先读这个
 
 - 这是一个个性化 fork，不是原版 Ombre-Brain 的无改动镜像。
-- 当前 `main` 是新版主线，已包含原 `feature/memory-diffusion-p0` 的 Gateway、画像、handoff、Darkroom 和短时上下文能力；旧主线留档在 `archive/main-before-p0-20260607`。
+- 当前 `main` 是新版主线，已包含原 `feature/memory-diffusion-p0` 的 Gateway、图结构召回、画像、handoff、Darkroom 和短时上下文能力；旧主线留档在 `archive/main-before-p0-20260607`。
 - 原版代码仍遵循原项目 MIT License；本 fork 新增内容允许个人学习、自用和非商业二改，商业使用需另行取得授权。详见 [`NOTICE.md`](NOTICE.md)。
 - 默认人设、提示词和年轮作者使用 `config.yaml` 里的 `identity` 名字；示例默认是 `Haven`、`Rain`、`小雨/xiaoyu`。
-- 生产部署建议使用源码构建，并同时运行 `ombre-brain` 和 `ombre-gateway` 两个服务。
+- 生产部署建议使用源码构建，并同时运行 `ombre-brain` 和 `ombre-gateway` 两个服务；旧 `docker-compose.user.yml` / `docker-compose.yml` 只适合历史参考，不是当前新版入口。
 - bucket 数据和运行状态必须放在持久化目录里；`state` 不建议放进任何双向同步目录。
 - `X-Ombre-Session-Id` 是本 fork 的 Gateway 会话头，不是 OpenAI 标准字段。它像 Persona 的“房间号”：同一个值会共用同一份 persona_state 和召回冷却记录。可以自己起，比如 `my-main`、`chat-main`，不要照抄旧文档里的 `xiaoyu-main`。
 - 给 Operit 或其它聊天平台写工具使用清单时，先区分 MCP 工具模式和 Gateway 自动注入模式，参考 [`docs/Tool Guide.md`](<docs/Tool Guide.md>)。记得重新复制这份 Tool Guide 到客户端；旧工具说明不会知道 `is_session_start`、`mode="handoff"`、query breath、`darkroom_enter` 和调试工具边界。
@@ -24,7 +24,10 @@
 - Gateway 会记录轻量 `conversation_turns`。遇到“刚刚/刚才/刚说/上一句/暗号”等短时跨窗口问题时，优先注入 Just Now Chat Context，并跳过默认记忆查询。
 - Gateway 的日期问题会给小段 Date Persona Trace；如果本轮已有 Handoff Context，默认跳过泛泛的 Recent Context，避免 handoff、recent_context 和 query breath 重复塞。
 - Daily Portrait Maintainer 会维护用户画像、Haven persona、关系画像和“最近在做什么”，只写 `state/portrait_state.json`，不直接写长期记忆；Dashboard 可手动生成/刷新。
+- 图结构召回的当前主路是 `retrieval_mode=graph`：先找可靠 direct seed，再沿 moment / bucket 边做短摘要联想；`retrieval_mode=bucket` 只是对照模式。
+- 旧桶格式已经按新版边界迁移过：事实/事件进 `### moment`，Haven 的理解进 `### assistant_reflection`，`### affect_anchor` 只留和弦、温度和诗性标记。
 - Darkroom 用来放未想透、不该给用户看、不该进普通记忆的内在反思；外部工具清单只暴露 `darkroom_enter`。
+- Dream surfacing 和 Gateway Dream Context 是两层开关：`surface_enabled` 控制 `breath()` 梦境浮现，`inject_enabled` 控制 Gateway 隐藏注入，默认不注入。
 - 外部 MCP 工具清单已收窄：日常只保留使用者该调用的工具，`enrich_backfill`、`edge_backfill`、`inspect_diffusion`、`inspect_moments` 等调试工具只在明确修记忆系统时使用。
 - embedding 推荐用 `OMBRE_EMBEDDING_*` 环境变量。不要把 `embedding.api_key_env` 当成推荐写法；`api_key_env` 是 `gateway.upstreams[*]` 引用上游模型 key 的字段。
 
@@ -57,23 +60,27 @@
 | 工具调用和流式兼容 | 透传 `tools / tool_choice / tool_calls`，支持 SSE 流式响应，兼容部分 reasoning_content 场景；Persona post-reply 评估会跳过带 `tool_calls` 的 assistant 中间态，只评估最终自然语言回复 | `gateway.py` |
 | Memory Edge / Node | 自动生成显式记忆关系边；`memory_nodes.sqlite` 为 bucket 生成 salience 与 facets，Gateway 和 `breath()` 可沿边做多跳联想浮现 | `memory_edges.py`、`memory_nodes.py`、`memory_diffusion.py`、`reflection_engine.py` |
 | Memory Moment | 将 Markdown bucket 解析成 `body / moment / original / context / feeling / followup / affect_anchor / favorite_reason / comment` 等片段，写入 `memory_moments.sqlite`，并生成同桶前后文边、年轮/情绪温度边；`breath(query=...)` 以 moment 为单位召回和扩散 | `memory_moments.py`、`server.py` |
+| Word Map Lite | 从 bucket/moment 派生关键词和共现边，用于 Dashboard 诊断和未来召回提示；默认不注入 Gateway | `word_map.py`、`scripts/build_word_map.py` |
+| Query Planner / Detail Recall | Gateway 可把长句或低置信问题拆成少量短查询；可选的内部 `memory_detail` 二次读取默认关闭，只允许已召回 bucket id | `gateway.py`、`server.py` |
+| Profile Fact / 事实画像 | `profile_fact` 是带证据 bucket/moment 的用户画像事实；自动流程只提候选，确认后才写事实 bucket | `server.py`、`portrait_engine.py`、`dashboard.html` |
 | 长期锚点 Anchor | 介于普通浮现和 pinned/permanent 之间的长期记忆位。`anchor=true` 的普通 bucket 不混入普通权重池，`breath()` 会用独立槽位少量带出，适合经过时间验证、未来仍需要被想起的关系锚点或项目锚点 | `server.py`、`dashboard.html` |
 | Relationship Weather | 日印象保存为 `type=feel`，默认不单独注入，可在面板观察或按配置开启注入 | `reflection_engine.py` |
-| Night Dream | 后台夜里用小模型生成潜伏梦，默认走 DeepSeek 官方 API `deepseek-v4-flash`；素材来自最近普通记忆和 whisper，素材够时按每日概率决定是否入梦；`breath()` 命中共振时按 `===== 梦境 =====` 块浮现一次，Dashboard 只显示做梦记录不展示正文 | `dream_engine.py`、`server.py`、`dashboard.html` |
+| Night Dream / Dream Context | 后台夜里用小模型生成潜伏梦；`breath()` 可共振浮现一次，Gateway 也可在 `dream.inject_enabled=true` 时注入一条 Dream Context | `dream_engine.py`、`gateway.py`、`server.py`、`dashboard.html` |
 | Darkroom | 保存未想透、不该给用户看、不该进普通记忆的内在反思；默认只作为私密暗房保留，外部工具清单只开放 `darkroom_enter` | `darkroom.py`、`server.py`、`dashboard.html` |
 | 年轮 comments | 将再次阅读某条记忆时的感受挂到源 bucket 的 `metadata.comments` 下；旧 feel 可迁移成源记忆年轮 | `bucket_manager.py`、`server.py`、`dashboard.html` |
 | whisper | 无源碎碎念/悄悄话独立保存为 `type=feel + whisper` 标签，可用 `breath(domain="whisper")` 单独读取 | `server.py` |
-| Dashboard 编辑 | 支持正文编辑、前端用户年轮写入/删除、日印象月历、Persona 面板、网络图、手动 reflect；日印象页按日期显示完整日印象，不再做情绪天气图 | `dashboard.html`、`server.py` |
+| Dashboard 编辑 | 支持正文编辑、前端用户年轮写入/删除、桶列表多选删除、日印象月历、Persona 面板、网络图、手动 reflect；日印象页按日期显示完整日印象，不再做情绪天气图 | `dashboard.html`、`server.py` |
 | 可选 Haven-diary/RiJi 摘记 | 完整日记留在 [Yinglianchun/RiJi](https://github.com/Yinglianchun/RiJi) 这类外部日记系统，Ombre 只提取少量长期有用记忆；不用可关闭 | `reflection_engine.py` |
 | Supabase 同步 | 本地 bucket 与 Supabase memories 表同步，支持 tombstone 删除墓碑 | `scripts/sync_to_supabase.py` |
-| ChatGPT Connector OAuth | 为 `/ombre/mcp` 提供 OAuth authorize/token 元数据 | `server.py` |
+| ChatGPT / Claude Connector OAuth | 为 `/ombre/mcp` 提供 OAuth authorize/token 元数据，并允许 Claude hosted callback | `server.py` |
+| 自动写入门卫 | `grow(auto=true)` 或 worker/Operit 自动总结先过 novelty / durability / repeat gate，低价值候选只记录或 pending | `memory_write_gate.py`、`server.py` |
 
 ## 系统架构
 
 ```text
 聊天客户端
   -> Ombre Gateway :18002
-    -> 读取 buckets / embeddings / persona_state / portrait_state / gateway_state / memory_edges
+    -> 读取 buckets / embeddings / persona_state / portrait_state / gateway_state / memory_moments / memory_edges
     -> 拼隐藏上下文
     -> 转发上游模型
     -> 回复成功后更新 Persona State 和召回记录
@@ -111,6 +118,8 @@ gateway_state.db    # 每个 session 的轮次、最近注入、冷却、轻量 
 persona_state.db    # Persona 全局状态、关系状态、会话心情
 portrait_state.json # 每日维护的 Persona/User/Relationship/Recent portrait
 memory_edges.jsonl  # 显式记忆关系边
+memory_moments.sqlite # bucket 片段索引
+memory_nodes.sqlite   # salience / facets
 .dashboard_auth.json
 config.runtime.yaml # Dashboard 写入的运行时配置补丁
 dreams/dream_*.md   # 潜伏梦正文；浮现一次后删除
@@ -119,6 +128,52 @@ darkroom/           # 私密暗房笔记
 ```
 
 时间默认使用 `Asia/Shanghai`。`utils.now_iso()` 会生成东八区时间。
+
+### 当前 bucket 正文结构
+
+新版写入和迁移后的 bucket 正文尽量拆成可索引的 section：
+
+```md
+### moment
+事件事实、背景或可被召回的短片段。
+
+### original
+当时原话或证据文本。
+
+### assistant_reflection
+Haven 对这件事的理解、回应规则、喜欢原因或自我确认。
+
+### followup
+后续承诺、待办、选择或状态变化。
+
+### affect_anchor
+和弦、温度、诗性标记；不放普通事实，不放用户画像事实。
+```
+
+`metadata.comments` 是年轮评论，仍挂在源 bucket 上，不再作为独立 feel bucket 浮现。当前生产数据已经跑过旧 `affect_anchor` 结构迁移：旧桶里的事实/事件被移到 `### moment`，Haven 解释被移到 `### assistant_reflection`，`### affect_anchor` 只保留温度。其它部署迁移旧数据时仍应先 dry-run，再确认 apply，并刷新 embedding / moment index。
+
+## 图结构记忆如何浮现
+
+当前 main 不是把所有记忆塞进一个 prompt，也不是用一棵全局树找记忆。底层更像一张可诊断的局部图：
+
+1. 原始长期记忆仍然是 Markdown bucket。
+2. bucket 会被解析成 moment，写入 `memory_moments.sqlite`。
+3. 同桶 moment 会生成 `next_context / previous_context / emotional_echo / reflects_on` 这类局部上下文边。
+4. `memory_edges.jsonl` 里的显式 bucket 边会桥接到代表 moment。
+5. 当前 query 先经过关键词、embedding、reranker、Query Planner 和 RecallPolicy，得到少数可靠 direct seed。
+6. seed 再沿 moment/bucket 边做带权扩散，得到 `Diffused Memory`，只按摘要和路径提示注入。
+
+这里和最初的“图结构记忆如何浮现”备忘相比，有几处已经收紧：
+
+- `comment`、`affect_anchor`、`favorite_reason` 会进索引，但属于 context-only section；它们不能单独当 direct seed，也不能单独证明一个 bucket 与 query 相关。
+- vague query 会被 `RecallPolicy.is_auto_query_too_vague()` 拦住；Gateway/Bridge 自动注入不会因为一句泛泛的“想起来了吗”硬捞语义 top1。
+- `Diffused Memory` 必须从可靠 direct seed 出发；明确主题 query 还要有 topic evidence。联想结果是背景提示，不是当前事实。
+- `Recent Context`、`Just Now Chat Context`、`Date Persona Trace` 和图扩散是不同层。刚刚/上一句优先走短时 `conversation_turns`，日期问题优先给小段日期 trace。
+- `breath(mode="handoff")` / 新窗口 handoff 不跑动态图扩散；它读 Persona、User Portrait、Relationship Portrait、Recent Continuity、少量 anchors 和 Darkroom Door 状态。
+- Word Map Lite 只是派生词图和诊断视图，默认不参与 Gateway 注入；它不是替代 `memory_edges` 的主图。
+- `retrieval_mode="bucket"` 只保留旧桶召回口感作对照；当前主路是 `retrieval_mode="graph"`。
+
+一句话：direct memory 负责“这件事确实命中了”，diffused memory 负责“有一条可靠路径可以轻轻提醒”，recent/just-now/handoff 负责“窗口和时间的连续性”。这几层不要混成一个大上下文。
 
 ## 从原版仓库来要注意
 
@@ -194,10 +249,14 @@ cp config.example.yaml /srv/ombre-brain/config.yaml
 - `gateway.related_memory_budget`：`Diffused Memory` 扩散背景预算，默认 `220`；设 `0` 可关闭 Gateway 扩散注入。
 - `gateway.direct_render_mode` / `retrieval_mode`：控制直命中展示形状和 `graph|bucket` 召回路线；默认 `auto` + `graph`。
 - `gateway.portrait_memory_*`：控制 Gateway 是否注入只读画像事实缓存，默认开启，只读取 `profile_fact` 和选中的 anchor，不读 pinned/protected。
+- `gateway.query_planner_*`：长句或低置信问题可额外拆成 1-3 个短查询；只是补候选，不直接注入。
+- `gateway.memory_detail_recall_*`：可选内部二次取细节，默认关闭；只允许已召回过的 bucket id。
 - `recall.query_resurface_enabled`：是否允许有 query 的 `breath()` 随机追加久未碰过的旧记忆，默认 `false`。
+- `memory_diffusion.*`：控制图扩散、链式扩散、hop 衰减和关系权重；默认启用普通短扩散，可靠链式扩散默认关闭。
+- `word_map.*`：派生词图诊断，默认关闭，不自动注入 Gateway。
 - `embedding.model/base_url`：embedding 模型和地址；key 推荐放 `.env` 的 `OMBRE_EMBEDDING_API_KEY`。
 - `write_path.semantic_search_timeout_seconds`：写入时找“只读相关旧记忆”的语义检索最多等待几秒，默认 `3`。网络慢时会跳过语义部分，不影响写入成功。
-- `dream.*`：夜梦后台配置；不写也有默认值，想自定义概率、时间、人格锚点时再改。
+- `dream.*`：夜梦后台配置；`surface_enabled` 管 `breath()` 浮现，`inject_enabled` 管 Gateway Dream Context 注入，默认不注入。
 - `identity.*`：改 AI 名、前端用户作者名、prompt 里的用户称呼和亲密称呼。
 - `persona.profile_id`：改成自己的稳定 id，避免和示例部署共用同一份 Persona 状态身份。
 - `persona.*`：改成自己的 Persona 模型和关系默认值。
@@ -412,12 +471,19 @@ curl -sS http://127.0.0.1:18002/health
 ```bash
 cd /opt/Ombre-Brain
 git status --short
-COMPOSE_FILE=compose.hk.yml bash scripts/update_deploy.sh
+bash scripts/one_click.sh
+# 菜单：2. 更新版本 -> 选择部署环境 -> 默认备份记忆桶 -> 更新
 curl -sS http://127.0.0.1:18001/health
 curl -sS http://127.0.0.1:18002/health
 ```
 
-2026-06-07 之后，旧 `main` 已换到新版主线。老部署目录如果还停在旧 `main`，不要手动普通 `git pull`；直接运行 `scripts/update_deploy.sh`。脚本会在 tracked 文件干净时把旧 HEAD 备份成 `archive/local-main-before-reset-*`，再切到新版 `origin/main`。`.env`、`buckets/`、`state/` 这类未跟踪/挂载文件不会因此删除。
+熟悉 Docker 的部署也可以直接跑：
+
+```bash
+COMPOSE_FILE=compose.hk.yml bash scripts/update_deploy.sh
+```
+
+2026-06-07 之后，旧 `main` 已换到新版主线。老部署目录如果还停在旧 `main`，不要手动普通 `git pull`；优先运行 `bash scripts/one_click.sh` 里的“更新版本”。脚本会先询问是否备份记忆桶，默认备份 `buckets/data`、`state`、`config.yaml` 和 `.env`；更新代码时会在 tracked 文件干净的情况下把旧 HEAD 备份成 `archive/local-main-before-reset-*`，再切到新版 `origin/main`。`.env`、`buckets/`、`state/` 这类未跟踪/挂载文件不会因为 git reset 被删除。
 
 如果 VPS 上有直接改过仓库里的 tracked 文件，脚本会停下。先 `git stash push -u -m pre-deploy-direct-vps-edits-$(date +%Y%m%d-%H%M%S)`，再重新运行更新脚本。
 
@@ -531,6 +597,8 @@ dream:
   enabled: true
   auto_enabled: true
   surface_enabled: true
+  inject_enabled: false
+  retain_after_inject: false
   base_url: "https://api.deepseek.com"
   model: "deepseek-v4-flash"
   thinking_mode: "disabled"
@@ -579,7 +647,17 @@ cue 或情绪分数达到阈值，或 spontaneous_surface_prob 掷中
 
 浮现一次后，梦正文文件会删除，只留事件记录。`introspection()` 是原 `dream()` 自省入口的新名字；原 `dream()` 入口仍可用，但它不是夜梦生成入口。
 
-### MCP / ChatGPT Connector
+Gateway Dream Context 另有一层开关：
+
+```yaml
+dream:
+  inject_enabled: false
+  retain_after_inject: false
+```
+
+`inject_enabled=true` 时，Gateway 可以在转发前注入一条共振梦作为 `Dream Context`。`retain_after_inject=true` 时，注入后只标记 surfaced，不删除梦记录；旧的 `breath()` 梦境浮现仍按原来的“一次后删除正文”语义运行。
+
+### MCP / ChatGPT / Claude Connector
 
 本 fork 的 MCP 仍由 `ombre-brain` 服务提供：
 
@@ -606,7 +684,7 @@ Claude 网页远程 connector 的 Advanced settings 里，`OAuth Client ID` 填 
 
 ### Dashboard 登录
 
-Dashboard 有单独的网页登录，不等同于 Gateway 的 `OMBRE_GATEWAY_TOKEN`，也不等同于 ChatGPT Connector OAuth。
+Dashboard 有单独的网页登录，不等同于 Gateway 的 `OMBRE_GATEWAY_TOKEN`，也不等同于 ChatGPT / Claude Connector OAuth。
 
 ```text
 Dashboard: http://<host>:18001/dashboard
@@ -652,8 +730,10 @@ rm /srv/ombre-brain/state/.dashboard_auth.json
 | `grow` | 长内容摘记；不要把整篇日记默认拆进 Ombre |
 | `comment_bucket` | 年轮主入口：给旧记忆追加年轮，作者固定取 `identity.ai_name` |
 | `trace` | 改 metadata、正文、resolved、delete 等 |
+| `profile_fact` | 手动固化带证据的用户画像事实；需要 evidence bucket/moment |
 | `pulse` | 系统状态和桶列表 |
 | `introspection` | 原 `dream()` 自省入口的新名字，不替代日记，也不是梦境生成；原 `dream()` 入口仍可用 |
+| `darkroom_enter` | 写入私密暗房，只返回门口状态，不回显正文；外部工具清单只暴露这个暗房入口 |
 | `resurface` | 只读浮现久未触碰的旧记忆 |
 | `reflect` | 生成 daily relationship_weather feel |
 | `edge_backfill` | 只补旧 bucket 的 memory_edges 关系边；不改正文、tags、importance、confidence |
@@ -1006,8 +1086,8 @@ force: bool = False             # True 时重写同周期结果
 - Dashboard 的“日印象”页提供月历和单卡片详情：左侧按日期选 daily impression，右侧显示该日完整日印象；点小铅笔进入原 bucket 详情面板手动编辑。
 - 不生成周印象；需要周视角时，优先做只读聚合视图，不把日印象压缩成周记。
 - 日记原文留在外部日记系统，例如 [Yinglianchun/RiJi](https://github.com/Yinglianchun/RiJi)；不用日记系统时可以关闭 diary 摘记，Ombre 只在有长期价值时提取少量普通记忆。
-- 日印象和重要高温记忆可带 `affect_anchor`。
-- `affect_anchor` 当前写在正文里，Dashboard 还没有专门解析 UI。
+- 日印象和重要高温记忆可带 `### affect_anchor`，但它只承载和弦、温度和诗性标记，不承载事实。
+- 用户画像事实不要写进 `affect_anchor`，也不要从 `assistant_reflection` 直接推断；需要证据时用 `profile_fact(...)` 或 Dashboard 的 Profile Facts 确认流程。
 
 ## Supabase 同步
 
@@ -1036,7 +1116,7 @@ source=deleted
 
 这些脚本默认在仓库根目录运行。VPS/Linux 直接用 `bash`；Windows 本地测试可用 Git Bash。常用环境变量：
 
-- `COMPOSE_FILE`：指定 compose 文件。`one_click.sh` 首次部署会生成 `compose.local.yml`；VPS 旧部署常用 `compose.hk.yml`。不填时会按 `compose.local.yml` → `compose.hk.yml` → `docker-compose.user.yml` → `docker-compose.yml` 自动找。
+- `COMPOSE_FILE`：指定 compose 文件。`one_click.sh` 首次部署会生成 `compose.local.yml`；VPS 旧部署常用 `compose.hk.yml`。不填时会按 `compose.local.yml` → `compose.hk.yml` → `docker-compose.user.yml` → `docker-compose.yml` 自动找。后两个是旧形态 compose，不含新版 Gateway/state 完整能力；当前部署请优先显式设 `COMPOSE_FILE=compose.hk.yml` 或走 one-click 生成的 `compose.local.yml`。
 - `OMBRE_SERVICE`：容器服务名，默认 `ombre-brain`。
 - `GATEWAY_SERVICE`：Gateway 容器服务名，默认 `ombre-gateway`。
 - `BATCH_SIZE`：embedding 每批处理数量，默认 `20`。
@@ -1045,7 +1125,7 @@ source=deleted
 - `YES=1`：跳过重建 embedding 的确认提示；清理孤儿 embedding 仍建议手动确认。
 
 ```bash
-# 一键菜单：首次部署、更新、排障、向量库相关、原版迁移
+# 一键菜单：首次部署、更新、排障、备份、删除旧备份包、记忆桶格式转换、向量库、原版迁移
 bash scripts/one_click.sh
 
 # 同上，短入口
@@ -1096,9 +1176,20 @@ python scripts/cleanup_duplicate_buckets.py --interactive --near-threshold 80
 python scripts/cleanup_duplicate_buckets.py --delete --yes
 python scripts/cleanup_orphan_embeddings.py --delete --yes
 
+# Dashboard 桶列表也支持“批量选择 -> 全选当前筛选 -> 删除选中”。
+# 它只删除普通 bucket，会跳过 protected / pinned / anchor / permanent，
+# 并写 tombstone、清 embedding / moment / node / edge 索引；删除前需要输入 DELETE。
+
 # enrich 补跑
 # 正常情况下 reflection scheduler 会自动少量补跑；需要手动修复时可从 MCP 客户端调用 enrich_backfill(limit=20)。
 # 只补关系边、不改 bucket metadata/正文时，用 edge_backfill(limit=10, bucket_id="", query="", dry_run=false)。
+
+# 旧 bucket 正文结构迁移：把旧 affect_anchor 里的事实/反思移到 moment / assistant_reflection。
+# 推荐走 ./ob -> 记忆桶格式转换。它会先 dry-run 输出审阅文件，apply 前强制备份。
+# 当前生产数据已跑过这类迁移。
+mkdir -p tmp
+python scripts/migrate_affect_anchor_sections.py --scope all --include-archive --output tmp/affect_anchor_plan.json --output-md tmp/affect_anchor_plan.md
+python scripts/migrate_affect_anchor_sections.py --from-plan tmp/affect_anchor_plan.json --apply --yes
 
 # 旧 feel -> 年轮迁移，建议优先走 one_click.sh 的“从原版 Ombre-Brain 迁移”
 docker compose -f compose.hk.yml exec -T ombre-brain sh -lc 'PYTHONIOENCODING=utf-8 python scripts/plan_feel_comment_backfill.py --mapping-template /state/feel_comment_backfill_mapping.json --review-markdown /state/feel_comment_backfill_review.md > /state/feel_comment_backfill_plan.json'
@@ -1111,16 +1202,19 @@ docker compose -f compose.hk.yml exec -T ombre-brain python scripts/cleanup_migr
 
 脚本用途：
 
-- `scripts/one_click.sh`：新手入口。菜单包含首次部署、更新版本、错误排查、向量库相关、从原版 Ombre-Brain 迁移。首次部署会先选择 `VPS / Windows / Python 直跑`，再选择 `只用 Ombre MCP 部分 / 部署全部`。只用 MCP 时只启动 MCP 工具和 Dashboard，不配置、不启动 Gateway；部署全部时才会继续填写 Gateway 上游、token 和 OpenAI-compatible 客户端地址。VPS 和 Windows 走 Docker 并生成本机专用的 `compose.local.yml`；Python 直跑适合手机 Termux、Linux、Windows 无 Docker，会生成 `start_local.sh` 和 `start_local.ps1`，同时保留 `start_mobile.sh` 兼容旧教程。模型配置和 key 会交互式填写，key 写入 `.env`，非密钥配置写入 `config.yaml`，最后生成 `connection_guide.txt` 告诉客户端 URL 怎么填。
+- `scripts/one_click.sh`：新手入口。菜单包含首次部署、更新版本、错误排查、备份当前部署、删除旧备份包、记忆桶格式转换、向量库相关、从原版 Ombre-Brain 迁移。首次部署会先选择 `VPS / Windows / Python 直跑`，再选择 `只用 Ombre MCP 部分 / 部署全部`。只用 MCP 时只启动 MCP 工具和 Dashboard，不配置、不启动 Gateway；部署全部时才会继续填写 Gateway 上游、token 和 OpenAI-compatible 客户端地址。VPS 和 Windows 走 Docker 并生成本机专用的 `compose.local.yml`；Python 直跑适合手机 Termux、Linux、Windows 无 Docker，会生成 `start_local.sh` 和 `start_local.ps1`，同时保留 `start_mobile.sh` 兼容旧教程。模型配置和 key 会交互式填写，key 写入 `.env`，非密钥配置写入 `config.yaml`；生成的 config 已包含当前 main 的 memory diffusion、query planner、portrait、dream inject 默认值和自动写入门卫。最后生成 `connection_guide.txt`，除了 URL / token / header，也会写 handoff、Just Now、Darkroom、Dream Context 和 Dashboard 批量删除提示。
 - `./ob`：短入口，等同于 `bash scripts/one_click.sh`。也可以在菜单里选“安装短命令 ob”，写入当前用户的 shell 配置；之后任意位置输入 `ob` 就能打开菜单。
 - Windows 上运行 `.sh` 脚本建议打开 Git Bash 再执行；不要在 PowerShell 里直接输 `bash ...`，否则少数机器可能会调用到 WSL 的 `bash.exe`。
 - `scripts/doctor.sh`：适合“更新后不能用、端口不通、怀疑 key 没配好”。它只读检查，不会重启服务、不改配置、不打印 key。会提示 `.env/config.yaml`、Docker Compose 状态、健康接口、容器内环境变量和最近错误日志；如果 compose 里没有启用 Gateway，会自动跳过 Gateway token 检查。
-- `scripts/update_deploy.sh`：适合“我只想更新到最新版”。它会从当前分支或 `OMBRE_BRANCH` 指定分支拉取代码；能 fast-forward 就直接前进，遇到 2026-06-07 主线换轨这类分叉时，会在 tracked 文件干净的部署目录里先建本地备份分支再 reset 到新版远端。之后如果 compose 里是 `build:` 就重建镜像，否则先 pull 镜像，再启动容器，最后做健康检查。
+- `scripts/update_deploy.sh`：适合“我只想更新到最新版”。它会从当前分支或 `OMBRE_BRANCH` 指定分支拉取代码；能 fast-forward 就直接前进，遇到 2026-06-07 主线换轨这类分叉时，会在 tracked 文件干净的部署目录里先建本地备份分支再 reset 到新版远端。之后如果 compose 里是 `build:` 就重建镜像，否则先 pull 镜像，再启动容器；最后检查 Ombre-Brain 健康，如果 compose 里有 `ombre-gateway`，也会检查 Gateway 健康。
+- 备份和清理旧备份：`one_click.sh` 的“备份当前部署”会打包 `buckets/data`、`state`、`config.yaml`、`.env`；“删除旧备份包”只列出并删除 `state/backups` 或容器 `/state/backups` 里的 `.tar.gz/.tgz/.zip`，需要输入序号和 `DELETE`。
+- 记忆桶格式转换：`one_click.sh` 的“记忆桶格式转换”会先生成 `affect_anchor_plan.json` 和 Markdown 审阅文件，把旧 `affect_anchor` 里混入的事实/反思迁到 `moment` / `assistant_reflection`；应用前会强制备份当前部署。
 - `scripts/embedding_backfill.sh`：只补缺失的 embedding，适合升级后发现部分记忆没有语义召回。
 - `scripts/embedding_rebuild.sh`：重建全部 embedding，适合 embedding 模型、base_url 或 embedding 文本格式改过之后使用。它会消耗更多 API 次数。
 - `scripts/embedding_cleanup_orphans.sh`：检查 `embeddings.db` 里已经没有对应 bucket 文件的记录，并要求输入确认后删除；确认已备份且要非交互执行时可追加 `--yes`。
 - Python 直跑用户可以从 `scripts/one_click.sh` 的“向量库相关”菜单执行补向量、重建向量、清孤儿向量和导入重复桶清理，不需要 Docker Compose。
 - 导入重复桶清理：不要直接删全部桶。优先在 Dashboard 的“导入 -> 导入结果”里删除/标为噪声；需要批量处理时先备份 `buckets/state`，再用 `scripts/cleanup_duplicate_buckets.py` 扫描。扫描结果会打印重复桶前两句话和相似度；`--interactive --near-threshold 80` 会逐组确认，疑似重复按 `y` 删除建议项、按 `1/2` 删除左/右；`--delete --yes` 只会一键删除 exact duplicate 中安全的一份并清对应 embedding。
+- Dashboard 桶列表多选删除：适合按筛选结果批量删普通动态桶。入口是“批量选择 -> 全选当前筛选 -> 删除选中”，会要求输入 `DELETE`，后端会写 tombstone 并清理 embedding、moment、node、edge 索引；受保护、钉选、长期锚点和 permanent bucket 会被跳过。
 - 原版迁移菜单：先检查旧部署、备份 buckets/state，再生成旧 `feel` 审阅表和 mapping。如果二改版目录和原版目录不同，可以选“备份指定原版目录”，手动填写原版仓库路径，脚本会只打包其中的 `buckets/`、`state/`、`config.yaml`、`.env`。可以逐条输入 `y` 接受候选源记忆，输入 `n` 自己填源记忆 bucket id，或输入 `w` 保留为 whisper/无源 feel。旧 `feel` 写入年轮前必须预演 mapping；清理旧独立 `feel` 前也会要求先看 dry-run。
 
 `doctor.sh` 常见结论：

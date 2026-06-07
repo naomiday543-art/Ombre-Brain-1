@@ -2763,6 +2763,7 @@ async def test_config_get_reports_portrait_api_values(monkeypatch, tmp_path):
             "portrait": {
                 "enabled": False,
                 "auto_enabled": False,
+                "auto_initial_enabled": False,
                 "daily_enabled": True,
                 "daily_hour": 5,
                 "check_interval_minutes": 15,
@@ -2775,6 +2776,7 @@ async def test_config_get_reports_portrait_api_values(monkeypatch, tmp_path):
         SimpleNamespace(
             enabled=False,
             auto_enabled=False,
+            auto_initial_enabled=False,
             daily_enabled=True,
             model="portrait-model",
             base_url="https://portrait.example",
@@ -2790,6 +2792,7 @@ async def test_config_get_reports_portrait_api_values(monkeypatch, tmp_path):
 
     assert payload["portrait"]["enabled"] is False
     assert payload["portrait"]["auto_enabled"] is False
+    assert payload["portrait"]["auto_initial_enabled"] is False
     assert payload["portrait"]["daily_enabled"] is True
     assert payload["portrait"]["model"] == "portrait-model"
     assert payload["portrait"]["base_url"] == "https://portrait.example"
@@ -2799,7 +2802,8 @@ async def test_config_get_reports_portrait_api_values(monkeypatch, tmp_path):
     assert payload["portrait"]["daily_hour"] == 5
     assert payload["portrait"]["check_interval_minutes"] == 15
     assert payload["portrait"]["material_limit"] == 18
-    assert payload["portrait"]["first_run_material_limit"] == 80
+    assert payload["portrait"]["first_run_material_limit"] == 160
+    assert payload["portrait"]["persona_events_limit"] == 24
 
 
 @pytest.mark.asyncio
@@ -3107,6 +3111,7 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
                 "portrait": {
                     "enabled": True,
                     "auto_enabled": False,
+                    "auto_initial_enabled": False,
                     "daily_enabled": True,
                     "model": "portrait-new",
                     "base_url": "https://portrait-new.example",
@@ -3321,6 +3326,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                 "portrait": {
                     "enabled": True,
                     "auto_enabled": False,
+                    "auto_initial_enabled": False,
                     "daily_enabled": True,
                     "model": "portrait-new",
                     "base_url": "https://portrait-new.example",
@@ -3436,6 +3442,7 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["reflection"]["base_url"] == "https://reflection-new.example"
     assert runtime_config["portrait"]["enabled"] is True
     assert runtime_config["portrait"]["auto_enabled"] is False
+    assert runtime_config["portrait"]["auto_initial_enabled"] is False
     assert runtime_config["portrait"]["daily_enabled"] is True
     assert runtime_config["portrait"]["model"] == "portrait-new"
     assert runtime_config["portrait"]["base_url"] == "https://portrait-new.example"

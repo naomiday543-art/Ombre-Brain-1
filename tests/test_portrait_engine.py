@@ -127,6 +127,122 @@ async def test_daily_portrait_maintainer_writes_evidence_bound_state_only(tmp_pa
     assert len(all_buckets) == 2
 
 
+@pytest.mark.asyncio
+async def test_daily_portrait_initial_run_requires_manual_force_by_default(tmp_path, test_config, bucket_mgr):
+    await bucket_mgr.create(
+        content="### moment\n\n小雨决定画像第一次要手动生成，避免别人更新代码后自动跑。",
+        name="portrait manual first run",
+        tags=["project_event"],
+        domain=["记忆系统"],
+        created="2026-06-07T10:00:00+08:00",
+        updated_at="2026-06-07T10:00:00+08:00",
+    )
+    state_path = tmp_path / "state" / "portrait_state.json"
+    cfg = {
+        **test_config,
+        "portrait": {
+            "enabled": True,
+            "auto_enabled": True,
+            "daily_enabled": True,
+            "state_path": str(state_path),
+        },
+    }
+    engine = DailyPortraitMaintainer(cfg)
+
+    async def fail_patch(*_args, **_kwargs):
+        raise AssertionError("initial auto run should not generate a patch")
+
+    engine._generate_patch = fail_patch
+    result = await engine.maintain_daily(
+        bucket_mgr,
+        force=False,
+        now=datetime(2026, 6, 7, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "initial_requires_manual"
+    assert result["initial"] is True
+    assert not state_path.exists()
+
+    async def fake_patch(date_key, state, materials, *, initial):
+        assert initial is True
+        assert len(materials["buckets"]) == 1
+        return {
+            "daily_summary": "画像第一次由手动生成。",
+            "add_recent": [
+                {
+                    "scope": "relationship",
+                    "text": "画像第一次初始化需要小雨手动触发。",
+                    "evidence": [{"bucket_id": materials["buckets"][0]["bucket_id"]}],
+                    "confidence": 0.8,
+                }
+            ],
+            "move_to_staging": [],
+            "rewrite_mid_term": [],
+            "stable_candidate": [],
+            "profile_fact_candidate": [],
+            "skip": [],
+        }
+
+    engine._generate_patch = fake_patch
+    forced = await engine.maintain_daily(
+        bucket_mgr,
+        force=True,
+        now=datetime(2026, 6, 7, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert forced["status"] == "initialized"
+    assert forced["initial"] is True
+    assert state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_daily_portrait_can_auto_initial_when_enabled(tmp_path, test_config, bucket_mgr):
+    await bucket_mgr.create(
+        content="### moment\n\n测试显式开启 auto_initial_enabled 时允许定时器初始化。",
+        name="portrait auto initial opt in",
+        tags=["project_event"],
+        domain=["记忆系统"],
+        created="2026-06-07T10:00:00+08:00",
+        updated_at="2026-06-07T10:00:00+08:00",
+    )
+    state_path = tmp_path / "state" / "portrait_state.json"
+    cfg = {
+        **test_config,
+        "portrait": {
+            "enabled": True,
+            "auto_enabled": True,
+            "auto_initial_enabled": True,
+            "daily_enabled": True,
+            "state_path": str(state_path),
+        },
+    }
+    engine = DailyPortraitMaintainer(cfg)
+
+    async def fake_patch(date_key, state, materials, *, initial):
+        assert initial is True
+        return {
+            "daily_summary": "显式开启后，自动首次生成被允许。",
+            "add_recent": [],
+            "move_to_staging": [],
+            "rewrite_mid_term": [],
+            "stable_candidate": [],
+            "profile_fact_candidate": [],
+            "skip": [],
+        }
+
+    engine._generate_patch = fake_patch
+    result = await engine.maintain_daily(
+        bucket_mgr,
+        force=False,
+        now=datetime(2026, 6, 7, 23, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+    assert result["status"] == "initialized"
+    assert result["initial"] is True
+    assert state_path.exists()
+
+
 def test_portrait_mid_term_rewrite_requires_staging_evidence(tmp_path, test_config):
     state_path = tmp_path / "state" / "portrait_state.json"
     engine = DailyPortraitMaintainer(

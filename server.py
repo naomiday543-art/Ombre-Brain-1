@@ -1840,6 +1840,7 @@ async def health_check(request):
             "portrait": {
                 "enabled": portrait_engine.enabled,
                 "auto_enabled": portrait_engine.auto_enabled,
+                "auto_initial_enabled": getattr(portrait_engine, "auto_initial_enabled", False),
                 "model": portrait_engine.model,
                 "api_ready": bool(portrait_engine.api_key),
                 "state_path": portrait_engine.state_path,
@@ -6627,6 +6628,7 @@ def _portrait_state_payload() -> dict:
         "state_path": getattr(portrait_engine, "state_path", ""),
         "enabled": bool(getattr(portrait_engine, "enabled", True)),
         "auto_enabled": bool(getattr(portrait_engine, "auto_enabled", True)),
+        "auto_initial_enabled": bool(getattr(portrait_engine, "auto_initial_enabled", False)),
         "daily_enabled": bool(getattr(portrait_engine, "daily_enabled", True)),
         "updated_at": state.get("updated_at", ""),
         "last_run_date": state.get("last_run_date", ""),
@@ -8002,6 +8004,12 @@ async def api_config_get(request):
         "portrait": {
             "enabled": bool(portrait_cfg.get("enabled", getattr(portrait_engine, "enabled", True))),
             "auto_enabled": bool(portrait_cfg.get("auto_enabled", getattr(portrait_engine, "auto_enabled", True))),
+            "auto_initial_enabled": bool(
+                portrait_cfg.get(
+                    "auto_initial_enabled",
+                    getattr(portrait_engine, "auto_initial_enabled", False),
+                )
+            ),
             "daily_enabled": bool(portrait_cfg.get("daily_enabled", getattr(portrait_engine, "daily_enabled", True))),
             "model": getattr(portrait_engine, "model", portrait_cfg.get("model", "")),
             "base_url": getattr(portrait_engine, "base_url", portrait_cfg.get("base_url", "")),
@@ -8016,7 +8024,11 @@ async def api_config_get(request):
             "material_limit": portrait_cfg.get("material_limit", getattr(portrait_engine, "material_limit", 18)),
             "first_run_material_limit": portrait_cfg.get(
                 "first_run_material_limit",
-                getattr(portrait_engine, "first_run_material_limit", 80),
+                getattr(portrait_engine, "first_run_material_limit", 160),
+            ),
+            "persona_events_limit": portrait_cfg.get(
+                "persona_events_limit",
+                getattr(portrait_engine, "persona_events_limit", 24),
             ),
         },
         "merge_threshold": config.get("merge_threshold", 75),
@@ -8360,6 +8372,7 @@ async def api_config_update(request):
         for key in (
             "enabled",
             "auto_enabled",
+            "auto_initial_enabled",
             "daily_enabled",
         ):
             if key in p:
@@ -8644,6 +8657,7 @@ async def api_config_update(request):
                 for key in (
                     "enabled",
                     "auto_enabled",
+                    "auto_initial_enabled",
                     "daily_enabled",
                 ):
                     if key in body["portrait"]:

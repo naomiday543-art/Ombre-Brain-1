@@ -2604,6 +2604,11 @@
         <select id="cfg-portrait-auto"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
       <div class="config-row">
+        <label>自动首次生成</label>
+        <select id="cfg-portrait-auto-initial"><option value="false">关闭</option><option value="true">开启</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">默认关闭；新安装或空 state 时，第一次画像需要手动点击生成</div>
+      <div class="config-row">
         <label>每日维护</label>
         <select id="cfg-portrait-daily"><option value="true">开启</option><option value="false">关闭</option></select>
       </div>
@@ -3131,6 +3136,7 @@ function renderPortraitState(data) {
     '<span class="profile-chip">read only</span>' +
     portraitStatusChip('engine', state.enabled !== false) +
     portraitStatusChip('auto', state.auto_enabled !== false) +
+    portraitStatusChip('auto initial', state.auto_initial_enabled === true) +
     portraitStatusChip('daily', state.daily_enabled !== false) +
     '<span class="profile-chip">last run ' + esc(state.last_run_date || '—') + '</span>' +
     '<span class="profile-chip">updated ' + esc(state.updated_at || '—') + '</span>' +
@@ -5450,12 +5456,14 @@ async function loadConfig() {
       (cfg.portrait && cfg.portrait.enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-portrait-auto').value =
       (cfg.portrait && cfg.portrait.auto_enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-portrait-auto-initial').value =
+      (cfg.portrait && cfg.portrait.auto_initial_enabled) === true ? 'true' : 'false';
     document.getElementById('cfg-portrait-daily').value =
       (cfg.portrait && cfg.portrait.daily_enabled) === false ? 'false' : 'true';
     document.getElementById('cfg-portrait-material-limit').value =
       (cfg.portrait && cfg.portrait.material_limit) ?? 18;
     document.getElementById('cfg-portrait-first-limit').value =
-      (cfg.portrait && cfg.portrait.first_run_material_limit) ?? 80;
+      (cfg.portrait && cfg.portrait.first_run_material_limit) ?? 160;
     document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 75;
     document.getElementById('config-readonly').innerHTML =
       'Transport: <strong>' + esc(cfg.transport) + '</strong><br>' +
@@ -5538,9 +5546,10 @@ async function saveConfig(persist, persistEnv) {
     candidate.portrait = {
       enabled: document.getElementById('cfg-portrait-enabled').value === 'true',
       auto_enabled: document.getElementById('cfg-portrait-auto').value === 'true',
+      auto_initial_enabled: document.getElementById('cfg-portrait-auto-initial').value === 'true',
       daily_enabled: document.getElementById('cfg-portrait-daily').value === 'true',
       material_limit: numberValue('cfg-portrait-material-limit', 18),
-      first_run_material_limit: numberValue('cfg-portrait-first-limit', 80),
+      first_run_material_limit: numberValue('cfg-portrait-first-limit', 160),
     };
   }
   if (activeTarget === 'memory-config') {

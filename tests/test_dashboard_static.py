@@ -320,20 +320,23 @@ def test_dashboard_exposes_portrait_maintainer_controls():
     assert "<h3>每日画像 Portrait</h3>" in html
     assert 'id="cfg-portrait-enabled"' in html
     assert 'id="cfg-portrait-auto"' in html
+    assert 'id="cfg-portrait-auto-initial"' in html
     assert 'id="cfg-portrait-daily"' in html
     assert 'id="cfg-portrait-material-limit"' in html
     assert 'id="cfg-portrait-first-limit"' in html
     assert "cfg.portrait.enabled" in load_block
     assert "cfg.portrait.auto_enabled" in load_block
+    assert "cfg.portrait.auto_initial_enabled" in load_block
     assert "cfg.portrait.daily_enabled" in load_block
     assert "cfg.portrait.first_run_material_limit" in load_block
     assert "Portrait API" in load_block
     portrait_block = save_block.split("candidate.portrait = {", 1)[1].split("};", 1)[0]
     assert "enabled: document.getElementById('cfg-portrait-enabled').value === 'true'," in portrait_block
     assert "auto_enabled: document.getElementById('cfg-portrait-auto').value === 'true'," in portrait_block
+    assert "auto_initial_enabled: document.getElementById('cfg-portrait-auto-initial').value === 'true'," in portrait_block
     assert "daily_enabled: document.getElementById('cfg-portrait-daily').value === 'true'," in portrait_block
     assert "material_limit: numberValue('cfg-portrait-material-limit', 18)," in portrait_block
-    assert "first_run_material_limit: numberValue('cfg-portrait-first-limit', 80)," in portrait_block
+    assert "first_run_material_limit: numberValue('cfg-portrait-first-limit', 160)," in portrait_block
     assert "'portrait'," in save_block
 
 

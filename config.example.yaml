@@ -521,6 +521,7 @@ reflection:
 portrait:
   enabled: true
   auto_enabled: true
+  auto_initial_enabled: false       # first portrait state requires manual generation
   daily_enabled: true
   timezone: "Asia/Shanghai"
   daily_hour: 4
@@ -533,8 +534,8 @@ portrait:
   temperature: 0.1
   max_tokens: 900
   material_limit: 18
-  first_run_material_limit: 80
-  persona_events_limit: 12
+  first_run_material_limit: 160
+  persona_events_limit: 24
   recent_buffer_max: 24
   staging_pool_max: 24
   candidate_max: 40

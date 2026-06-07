@@ -79,6 +79,7 @@ class DailyPortraitMaintainer:
 
         self.enabled = self._bool(cfg.get("enabled", True), True)
         self.auto_enabled = self._bool(cfg.get("auto_enabled", True), True)
+        self.auto_initial_enabled = self._bool(cfg.get("auto_initial_enabled", False), False)
         self.daily_enabled = self._bool(cfg.get("daily_enabled", True), True)
         self.timezone_name = str(
             cfg.get("timezone")
@@ -95,9 +96,9 @@ class DailyPortraitMaintainer:
             int(cfg.get("check_interval_minutes", reflection_cfg.get("check_interval_minutes", 60))),
         )
         self.material_limit = max(1, int(cfg.get("material_limit", 18)))
-        self.first_run_material_limit = max(self.material_limit, int(cfg.get("first_run_material_limit", 80)))
+        self.first_run_material_limit = max(self.material_limit, int(cfg.get("first_run_material_limit", 160)))
         self.source_excerpt_chars = max(1, int(cfg.get("source_excerpt_chars", 900)))
-        self.persona_events_limit = max(0, int(cfg.get("persona_events_limit", 12)))
+        self.persona_events_limit = max(0, int(cfg.get("persona_events_limit", 24)))
         self.recent_buffer_max = max(1, int(cfg.get("recent_buffer_max", 24)))
         self.staging_pool_max = max(1, int(cfg.get("staging_pool_max", 24)))
         self.candidate_max = max(1, int(cfg.get("candidate_max", 40)))
@@ -162,6 +163,14 @@ class DailyPortraitMaintainer:
             }
 
         initial = not bool(state.get("runs"))
+        if initial and not force and not self.auto_initial_enabled:
+            return {
+                "status": "skipped",
+                "reason": "initial_requires_manual",
+                "date": date_key,
+                "state_path": self.state_path,
+                "initial": True,
+            }
         materials = await self._daily_materials(
             bucket_mgr,
             persona_engine,

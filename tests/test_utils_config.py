@@ -16,6 +16,10 @@ def test_load_config_defaults_relationship_weather_off(tmp_path):
     assert config["reflection"]["daily_enabled"] is True
     assert config["reflection"]["memory_affect_anchor_enabled"] is True
     assert config["reflection"]["relationship_weather_affect_anchor_enabled"] is True
+    assert config["portrait"]["enabled"] is True
+    assert config["portrait"]["auto_enabled"] is True
+    assert config["portrait"]["daily_enabled"] is True
+    assert config["portrait"]["state_path"] == ""
     assert config["dream"]["old_echo_enabled"] is True
     assert config["dream"]["old_echo_min_age_hours"] == 72
 

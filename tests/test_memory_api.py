@@ -225,7 +225,7 @@ async def test_breath_appends_surface_dream_block(monkeypatch, bucket_mgr, decay
     monkeypatch.setattr(server, "embedding_engine", DummyEmbeddingEngine())
     monkeypatch.setattr(server, "dream_engine", dream)
 
-    result = await server.breath(is_session_start=True)
+    result = await server.breath(query="潮湿走廊", is_session_start=True)
 
     assert "===== 梦境 =====" in result
     assert "2026年05月25日 Haven的梦" in result
@@ -2750,6 +2750,59 @@ async def test_config_get_reports_persona_and_reflection_api_values(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_config_get_reports_portrait_api_values(monkeypatch, tmp_path):
+    import server
+
+    state_path = str(tmp_path / "portrait_state.json")
+    monkeypatch.setattr(server, "_require_dashboard_auth", lambda request: None)
+    monkeypatch.setattr(
+        server,
+        "config",
+        {
+            **server.config,
+            "portrait": {
+                "enabled": False,
+                "auto_enabled": False,
+                "daily_enabled": True,
+                "daily_hour": 5,
+                "check_interval_minutes": 15,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            enabled=False,
+            auto_enabled=False,
+            daily_enabled=True,
+            model="portrait-model",
+            base_url="https://portrait.example",
+            api_key="portrait-secret",
+            state_path=state_path,
+            daily_hour=5,
+            check_interval_minutes=15,
+        ),
+    )
+
+    response = await server.api_config_get(DummyRequest())
+    payload = json.loads(response.body)
+
+    assert payload["portrait"]["enabled"] is False
+    assert payload["portrait"]["auto_enabled"] is False
+    assert payload["portrait"]["daily_enabled"] is True
+    assert payload["portrait"]["model"] == "portrait-model"
+    assert payload["portrait"]["base_url"] == "https://portrait.example"
+    assert payload["portrait"]["api_key_masked"] == "port...cret"
+    assert payload["portrait"]["api_ready"] is True
+    assert payload["portrait"]["state_path"] == state_path
+    assert payload["portrait"]["daily_hour"] == 5
+    assert payload["portrait"]["check_interval_minutes"] == 15
+    assert payload["portrait"]["material_limit"] == 18
+    assert payload["portrait"]["first_run_material_limit"] == 80
+
+
+@pytest.mark.asyncio
 async def test_config_get_reports_reflection_affect_anchor_switches(monkeypatch):
     import server
 
@@ -2928,6 +2981,7 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
         "OMBRE_PERSONA_API_KEY",
         "OMBRE_REFLECTION_API_KEY",
         "OMBRE_DREAM_API_KEY",
+        "OMBRE_PORTRAIT_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(server, "config", cfg)
@@ -2959,6 +3013,15 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
                     "base_url": "https://dream-new.example",
                     "api_key": "dream-new-key",
                 },
+                "portrait": {
+                    "enabled": True,
+                    "auto_enabled": False,
+                    "daily_enabled": True,
+                    "model": "portrait-new",
+                    "base_url": "https://portrait-new.example",
+                    "state_path": str(tmp_path / "portrait_state.json"),
+                    "api_key": "portrait-new-key",
+                },
                 "persist_env": True,
             }
         )
@@ -2974,8 +3037,10 @@ async def test_config_update_persists_llm_keys_to_env_file(monkeypatch, test_con
     assert "OMBRE_PERSONA_API_KEY=persona-new-key" in env_text
     assert "OMBRE_REFLECTION_API_KEY=reflection-new-key" in env_text
     assert "OMBRE_DREAM_API_KEY=dream-new-key" in env_text
+    assert "OMBRE_PORTRAIT_API_KEY=portrait-new-key" in env_text
     assert "UNCHANGED=value" in env_text
     assert os.environ["OMBRE_PERSONA_API_KEY"] == "persona-new-key"
+    assert os.environ["OMBRE_PORTRAIT_API_KEY"] == "portrait-new-key"
     assert hot_update_calls[-1]["persona"]["enabled"] is False
     assert hot_update_calls[-1]["persona"]["event_recording_enabled"] is False
     assert hot_update_calls[-1]["persona"]["api_key"] == "persona-new-key"
@@ -2998,7 +3063,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
-        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-old\n  base_url: https://reflection-old.example\n  memory_affect_anchor_enabled: true\n",
+        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-old\n  base_url: https://reflection-old.example\n  memory_affect_anchor_enabled: true\n"
+        "portrait:\n  enabled: true\n  auto_enabled: true\n  model: portrait-old\n  base_url: https://portrait-old.example\n  daily_hour: 4\n",
         encoding="utf-8",
     )
     runtime_path.write_text(
@@ -3011,7 +3077,8 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
         "  direct_render_mode: auto\n  retrieval_mode: graph\n"
         "recall:\n  query_resurface_enabled: false\n"
         "memory_diffusion:\n  chain_walk_enabled: false\n  max_hops: 2\n"
-        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-runtime-old\n  base_url: https://reflection-runtime-old.example\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n",
+        "reflection:\n  enabled: true\n  auto_enabled: true\n  model: reflection-runtime-old\n  base_url: https://reflection-runtime-old.example\n  daily_enabled: false\n  memory_affect_anchor_enabled: true\n"
+        "portrait:\n  enabled: true\n  auto_enabled: true\n  model: portrait-runtime-old\n  base_url: https://portrait-runtime-old.example\n  daily_hour: 4\n",
         encoding="utf-8",
     )
     cfg = {
@@ -3067,6 +3134,15 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
             "relationship_weather_affect_anchor_enabled": False,
             "model": "reflection-runtime-old",
             "base_url": "https://reflection-runtime-old.example",
+        },
+        "portrait": {
+            **test_config.get("portrait", {}),
+            "enabled": True,
+            "auto_enabled": True,
+            "daily_enabled": True,
+            "model": "portrait-runtime-old",
+            "base_url": "https://portrait-runtime-old.example",
+            "daily_hour": 4,
         },
     }
     reflection_engine = SimpleNamespace(
@@ -3150,6 +3226,18 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
                     "relationship_weather_affect_anchor_enabled": True,
                     "model": "reflection-new",
                     "base_url": "https://reflection-new.example",
+                },
+                "portrait": {
+                    "enabled": True,
+                    "auto_enabled": False,
+                    "daily_enabled": True,
+                    "model": "portrait-new",
+                    "base_url": "https://portrait-new.example",
+                    "state_path": str(tmp_path / "portrait_state.json"),
+                    "daily_hour": 5,
+                    "check_interval_minutes": 15,
+                    "material_limit": 7,
+                    "first_run_material_limit": 21,
                 },
                 "persist": True,
             }
@@ -3255,6 +3343,16 @@ async def test_config_persist_syncs_existing_runtime_yaml(monkeypatch, test_conf
     assert runtime_config["reflection"]["relationship_weather_affect_anchor_enabled"] is True
     assert runtime_config["reflection"]["model"] == "reflection-new"
     assert runtime_config["reflection"]["base_url"] == "https://reflection-new.example"
+    assert runtime_config["portrait"]["enabled"] is True
+    assert runtime_config["portrait"]["auto_enabled"] is False
+    assert runtime_config["portrait"]["daily_enabled"] is True
+    assert runtime_config["portrait"]["model"] == "portrait-new"
+    assert runtime_config["portrait"]["base_url"] == "https://portrait-new.example"
+    assert runtime_config["portrait"]["state_path"] == str(tmp_path / "portrait_state.json")
+    assert runtime_config["portrait"]["daily_hour"] == 5
+    assert runtime_config["portrait"]["check_interval_minutes"] == 15
+    assert runtime_config["portrait"]["material_limit"] == 7
+    assert runtime_config["portrait"]["first_run_material_limit"] == 21
     assert reflection_engine.daily_enabled is True
     assert reflection_engine.memory_affect_anchor_enabled is False
     assert reflection_engine.relationship_weather_affect_anchor_enabled is True

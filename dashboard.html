@@ -2475,6 +2475,32 @@
     </div>
 
     <div class="config-section">
+      <h3>每日画像 Portrait</h3>
+      <div class="config-row">
+        <label>画像引擎</label>
+        <select id="cfg-portrait-enabled"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">总开关；只维护 state/portrait_state.json，不自动写 profile_fact、anchor 或 Core Memory</div>
+      <div class="config-row">
+        <label>自动维护</label>
+        <select id="cfg-portrait-auto"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div class="config-row">
+        <label>每日维护</label>
+        <select id="cfg-portrait-daily"><option value="true">开启</option><option value="false">关闭</option></select>
+      </div>
+      <div class="config-row">
+        <label>当天材料上限</label>
+        <input type="number" id="cfg-portrait-material-limit" min="1" max="100" />
+      </div>
+      <div class="config-row">
+        <label>首次材料上限</label>
+        <input type="number" id="cfg-portrait-first-limit" min="1" max="500" />
+      </div>
+      <div style="margin-top:-4px;margin-bottom:12px;padding-left:122px;font-size:11px;color:var(--text-light);">第一次画像初始化可适当调大；之后每天只看当天新增/更新的记忆材料</div>
+    </div>
+
+    <div class="config-section">
       <h3>其他参数</h3>
       <div class="config-row">
         <label>合并阈值</label>
@@ -5116,12 +5142,24 @@ async function loadConfig() {
     document.getElementById('cfg-reflection-key').placeholder =
       '当前: ' + ((cfg.reflection && cfg.reflection.api_key_masked) || ((cfg.reflection && cfg.reflection.api_ready) ? '***' : '未设置'));
     document.getElementById('cfg-reflection-key').value = '';
+    document.getElementById('cfg-portrait-enabled').value =
+      (cfg.portrait && cfg.portrait.enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-portrait-auto').value =
+      (cfg.portrait && cfg.portrait.auto_enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-portrait-daily').value =
+      (cfg.portrait && cfg.portrait.daily_enabled) === false ? 'false' : 'true';
+    document.getElementById('cfg-portrait-material-limit').value =
+      (cfg.portrait && cfg.portrait.material_limit) ?? 18;
+    document.getElementById('cfg-portrait-first-limit').value =
+      (cfg.portrait && cfg.portrait.first_run_material_limit) ?? 80;
     document.getElementById('cfg-merge').value = cfg.merge_threshold ?? 75;
     document.getElementById('config-readonly').innerHTML =
       'Transport: <strong>' + esc(cfg.transport) + '</strong><br>' +
       'Buckets dir: <strong>' + esc(cfg.buckets_dir) + '</strong><br>' +
       'Persona API: <strong>' + ((cfg.persona && cfg.persona.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
       '日印象 API: <strong>' + ((cfg.reflection && cfg.reflection.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
+      'Portrait API: <strong>' + ((cfg.portrait && cfg.portrait.api_ready) ? '已设置' : '未设置') + '</strong><br>' +
+      'Portrait state: <strong>' + esc((cfg.portrait && cfg.portrait.state_path) || '默认') + '</strong><br>' +
       'Dream API: <strong>' + (cfg.dream.api_ready ? '已设置' : '未设置') + '</strong><br>' +
       'Embedding effective URL: <strong>' + esc(cfg.embedding.effective_base_url || '未设置') + '</strong>';
   } catch (e) {
@@ -5193,6 +5231,13 @@ async function saveConfig(persist, persistEnv) {
     candidate.reflection = {
       base_url: document.getElementById('cfg-reflection-url').value,
     };
+    candidate.portrait = {
+      enabled: document.getElementById('cfg-portrait-enabled').value === 'true',
+      auto_enabled: document.getElementById('cfg-portrait-auto').value === 'true',
+      daily_enabled: document.getElementById('cfg-portrait-daily').value === 'true',
+      material_limit: numberValue('cfg-portrait-material-limit', 18),
+      first_run_material_limit: numberValue('cfg-portrait-first-limit', 80),
+    };
   }
   if (activeTarget === 'memory-config') {
     candidate.gateway = {
@@ -5234,6 +5279,7 @@ async function saveConfig(persist, persistEnv) {
     'recall',
     'memory_diffusion',
     'reflection',
+    'portrait',
   ].forEach(function(sectionName) {
     if (candidate[sectionName]) addChangedSection(body, sectionName, candidate[sectionName]);
   });

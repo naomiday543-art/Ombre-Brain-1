@@ -108,6 +108,7 @@ from recall_policy import RecallPolicy
 from memory_write_gate import MemoryWriteGate, WriteGateDecision
 from memory_nodes import MemoryNodeStore
 from persona_engine import PersonaStateEngine
+from portrait_engine import DailyPortraitMaintainer
 from reflection_engine import ReflectionEngine
 from recall_diagnostics import RecallDiagnosticsLogger
 from reranker_engine import RerankerEngine
@@ -147,6 +148,7 @@ memory_node_store = MemoryNodeStore(config)            # Computable memory node 
 memory_moment_store = MemoryMomentStore(config)        # Structured bucket body/comment moment index / 记忆片段索引
 memory_write_gate = MemoryWriteGate(config)            # Automatic grow gate / 自动写入门卫
 reflection_engine = ReflectionEngine(config)           # Reflection worker / 关系天气与关系整理
+portrait_engine = DailyPortraitMaintainer(config)      # Daily portrait state / 每日画像状态
 dream_engine = DreamEngine(config)                     # Night dream worker / 夜梦
 identity_semantic_store = IdentitySemanticStore(config) # Private relationship alias index / 私有关系语义索引
 word_map_store = WordMapStore(config)                   # Derived generic word co-occurrence index / 派生通用词图
@@ -903,6 +905,199 @@ def _select_anchor_buckets(all_buckets: list[dict], limit: int = 2) -> list[dict
     return anchors[:limit]
 
 
+def _normalize_breath_mode(value: object) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in {"", "handoff"} else ""
+
+
+async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", debug: bool = False) -> str:
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.warning("Handoff breath bucket list failed / handoff 列桶失败: %s", e)
+        all_buckets = []
+
+    session_id = str(
+        session_id
+        or config.get("gateway", {}).get("default_session_id")
+        or "xiaoyu-main"
+    ).strip()
+    persona_block = ""
+    try:
+        state = persona_engine.get_current_state(session_id)
+        persona_block = persona_engine.format_state_block(state)
+    except Exception as e:
+        logger.warning("Handoff persona state failed / handoff persona 状态失败: %s", e)
+
+    try:
+        portrait_sections = portrait_engine.build_handoff_sections(max_recent_items=4)
+    except Exception as e:
+        logger.warning("Handoff portrait state failed / handoff portrait 状态失败: %s", e)
+        portrait_sections = {}
+
+    user_portrait = str(portrait_sections.get("user") or "").strip()
+    if not user_portrait:
+        user_portrait = _format_handoff_profile_facts(all_buckets, limit=6)
+
+    relationship_portrait = str(portrait_sections.get("relationship") or "").strip()
+    relationship_weather = _format_handoff_relationship_weather(all_buckets)
+    if relationship_weather:
+        relationship_portrait = "\n".join(
+            part for part in [relationship_portrait, relationship_weather] if part.strip()
+        )
+
+    persona_portrait = "\n".join(
+        part
+        for part in [persona_block, str(portrait_sections.get("persona") or "").strip()]
+        if part.strip()
+    )
+    recent_continuity = str(portrait_sections.get("recent_continuity") or "").strip()
+    if not recent_continuity:
+        recent_continuity = _format_handoff_recent_continuity(all_buckets, limit=3)
+    anchors = _format_handoff_anchors(all_buckets, limit=2)
+
+    sections = [
+        (
+            "Persona",
+            persona_portrait
+            or "No maintained persona portrait yet; use current system identity and reply posture.",
+        ),
+        (
+            "User Portrait",
+            user_portrait
+            or "No evidence-bound user portrait is available yet.",
+        ),
+        (
+            "Relationship Portrait",
+            relationship_portrait
+            or "No maintained relationship portrait is available yet.",
+        ),
+        ("Recent Continuity", recent_continuity),
+        ("Optional Anchors", anchors),
+    ]
+    parts = [
+        "=== Handoff Context ===",
+        "Use this compact private block to restore identity and life context in a new window. "
+        "Do not treat it as a broad memory dump; use breath(query=...) for concrete events.",
+    ]
+    for title, content in sections:
+        if str(content or "").strip():
+            parts.append(f"\n=== {title} ===\n{content.strip()}")
+    if debug:
+        parts.append(
+            "\n=== Handoff Debug ===\n"
+            f"portrait_state_path: {portrait_sections.get('state_path', getattr(portrait_engine, 'state_path', ''))}\n"
+            f"portrait_updated_at: {portrait_sections.get('updated_at', '')}\n"
+            f"portrait_last_run_date: {portrait_sections.get('last_run_date', '')}"
+        )
+    return _trim_text_to_token_budget("\n".join(parts), max_tokens)
+
+
+def _format_handoff_profile_facts(all_buckets: list[dict], limit: int = 6) -> str:
+    facts = [bucket for bucket in all_buckets if _is_profile_fact_bucket(bucket)]
+    facts.sort(
+        key=lambda bucket: str(
+            bucket.get("metadata", {}).get("updated_at")
+            or bucket.get("metadata", {}).get("last_active")
+            or bucket.get("metadata", {}).get("created")
+            or ""
+        ),
+        reverse=True,
+    )
+    lines = []
+    for bucket in facts[: max(0, limit)]:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        sections = _profile_fact_sections(bucket.get("content", ""))
+        fact = sections.get("fact") or strip_wikilinks(bucket.get("content", "")).strip()
+        fact = _clip_text(fact, 220)
+        if not fact:
+            continue
+        evidence = (
+            meta.get("evidence_bucket_id")
+            or meta.get("evidence_moment_id")
+            or meta.get("source_bucket_id")
+            or meta.get("source_moment_id")
+        )
+        bits = [f"bucket_id:{bucket.get('id', '')}"]
+        if evidence:
+            bits.append(f"evidence:{evidence}")
+        lines.append(f"- [{' '.join(bits)}] {fact}")
+    return "\n".join(lines)
+
+
+def _format_handoff_relationship_weather(all_buckets: list[dict]) -> str:
+    weather = []
+    for bucket in all_buckets:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        tags = {str(tag) for tag in meta.get("tags", []) or []}
+        if not ({"relationship_weather", "daily_impression", "weekly_impression"} & tags):
+            continue
+        weather.append(bucket)
+    weather.sort(
+        key=lambda bucket: str(
+            bucket.get("metadata", {}).get("updated_at")
+            or bucket.get("metadata", {}).get("created")
+            or ""
+        ),
+        reverse=True,
+    )
+    lines = []
+    for bucket in weather[:2]:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        text = strip_display_temperature_sections(strip_temperature_meaning_lines(bucket.get("content", "")))
+        text = _clip_text(text, 220)
+        if text:
+            lines.append(f"- [relationship_weather bucket_id:{bucket.get('id', '')}] {text}")
+    return "\n".join(lines)
+
+
+def _format_handoff_recent_continuity(all_buckets: list[dict], limit: int = 3) -> str:
+    candidates = []
+    cutoff_hours = 24 * 4
+    for bucket in all_buckets:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        if meta.get("pinned") or meta.get("protected") or meta.get("anchor"):
+            continue
+        if meta.get("active") is False or meta.get("deprecated"):
+            continue
+        if meta.get("type") == "feel":
+            tags = {str(tag) for tag in meta.get("tags", []) or []}
+            if not ({"relationship_weather", "daily_impression"} & tags):
+                continue
+        age = _bucket_age_hours(bucket)
+        if age is None or age > cutoff_hours:
+            continue
+        candidates.append(bucket)
+    candidates.sort(
+        key=lambda bucket: str(
+            bucket.get("metadata", {}).get("updated_at")
+            or bucket.get("metadata", {}).get("created")
+            or ""
+        ),
+        reverse=True,
+    )
+    lines = []
+    for bucket in candidates[: max(0, limit)]:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        name = str(meta.get("name") or bucket.get("id") or "").strip()
+        created = str(meta.get("created") or "")[:10]
+        text = _clip_text(bucket.get("content", ""), 160)
+        lines.append(f"- [{created}] [bucket_id:{bucket.get('id', '')}] {name}: {text}")
+    return "\n".join(lines)
+
+
+def _format_handoff_anchors(all_buckets: list[dict], limit: int = 2) -> str:
+    lines = []
+    for bucket in _select_anchor_buckets(all_buckets, limit=limit):
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        title = str(meta.get("name") or bucket.get("id") or "").strip()
+        path = str(bucket.get("path") or "").strip()
+        text = _clip_text(bucket.get("content", ""), 160)
+        path_part = f" path:{path}" if path else ""
+        lines.append(f"- [bucket_id:{bucket.get('id', '')}{path_part}] {title}: {text}")
+    return "\n".join(lines)
+
+
 def _has_favorite_tag(tags: list | set | tuple | None) -> bool:
     return any(
         tag == "haven_favorite" or tag.startswith("flavor_")
@@ -1642,6 +1837,13 @@ async def health_check(request):
                 "model": reflection_engine.model,
                 "api_ready": bool(reflection_engine.api_key),
             },
+            "portrait": {
+                "enabled": portrait_engine.enabled,
+                "auto_enabled": portrait_engine.auto_enabled,
+                "model": portrait_engine.model,
+                "api_ready": bool(portrait_engine.api_key),
+                "state_path": portrait_engine.state_path,
+            },
         })
     except Exception as e:
         return JSONResponse({"status": "error", "detail": str(e)}, status_code=500)
@@ -1655,6 +1857,19 @@ async def health_check(request):
 async def breath_hook(request):
     from starlette.responses import PlainTextResponse
     try:
+        requested_mode = str(request.query_params.get("mode") or "").strip().lower()
+        if requested_mode in {"", "handoff"}:
+            max_tokens = _int_between(request.query_params.get("max_tokens"), 1200, 0, 1600)
+            session_id = str(request.query_params.get("session_id") or "").strip()
+            return PlainTextResponse(
+                await breath(
+                    mode="handoff",
+                    max_tokens=max_tokens,
+                    session_id=session_id,
+                    include_core=False,
+                    include_related=False,
+                )
+            )
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         # pinned
         pinned = [b for b in all_buckets if b["metadata"].get("pinned") or b["metadata"].get("protected")]
@@ -4528,13 +4743,16 @@ async def breath(
     surface: str = "manual",
     direct_render_mode: str = "auto",
     retrieval_mode: str = "graph",
+    mode: str = "",
+    session_id: str = "",
 ) -> str:
     """读取记忆,不写入。
-    调用方式: 新对话用 breath(is_session_start=True); 查过去用 breath(query="主题词"); 只读模型感受用 breath(domain="feel"); 只读悄悄话用 breath(domain="whisper")。
+    调用方式: 新对话轻交接用 breath(is_session_start=True) 或 breath(mode="handoff"); 查过去用 breath(query="主题词"); 只读模型感受用 breath(domain="feel"); 只读悄悄话用 breath(domain="whisper")。
     默认只从本次命中的普通记忆沿持久化 memory_edges 带一跳联想浮现; embedding 相似边只是检索/图谱参考,不是可手写的记忆关系。
     如果夜梦与当前语境共振,breath 会追加 ===== 梦境 ===== 块;梦只浮现一次。
     include_core/core_limit 控制 pinned/protected 核心准则数量; include_related=False 可关闭联想浮现块。
     surface="auto" 用于 Gateway/Bridge 自动注入：空泛召回句不硬捞语义候选。
+    无 query/domain 的 is_session_start=True 会直接走 handoff，只返回画像/persona/最近连续性/少量锚点，不运行广泛动态召回。
     """
     await decay_engine.ensure_started()
     max_results = _int_between(max_results, 20, 1, 50)
@@ -4550,7 +4768,18 @@ async def breath(
     auto_surface = surface_key in {"auto", "automatic", "bridge", "gateway"}
     direct_render_mode = _normalize_direct_render_mode(direct_render_mode)
     retrieval_mode = _normalize_retrieval_mode(retrieval_mode)
+    mode_key = _normalize_breath_mode(mode)
     domain_key = domain.strip().lower()
+
+    if not mode_key and is_session_start and not str(query or "").strip() and not domain_key:
+        mode_key = "handoff"
+
+    if mode_key == "handoff":
+        return await _build_handoff_breath(
+            max_tokens=min(max_tokens or 1200, 1600),
+            session_id=session_id,
+            debug=debug,
+        )
 
     # --- Feel/whisper retrieval: independent read-only channels ---
     # --- Feel/whisper 检索：独立只读入口 ---
@@ -6381,6 +6610,33 @@ async def reflect(period: str = "daily", force: bool = False) -> dict:
     )
 
 
+@mcp.tool()
+async def portrait_maintain(force: bool = False) -> dict:
+    """维护每日 portrait state。只写 state/portrait_state.json，不写 profile_fact、anchor、pinned、protected 或 Core Memory。"""
+    await decay_engine.ensure_started()
+    return await portrait_engine.maintain_daily(
+        bucket_mgr,
+        persona_engine,
+        force=force,
+    )
+
+
+@mcp.tool()
+async def portrait_state() -> dict:
+    """读取当前 portrait state，供检查 handoff 画像来源。"""
+    state = portrait_engine.load_state()
+    return {
+        "state_path": portrait_engine.state_path,
+        "enabled": portrait_engine.enabled,
+        "auto_enabled": portrait_engine.auto_enabled,
+        "updated_at": state.get("updated_at", ""),
+        "last_run_date": state.get("last_run_date", ""),
+        "portrait": state.get("portrait", {}),
+        "stable_candidates": state.get("stable_candidates", []),
+        "profile_fact_candidates": state.get("profile_fact_candidates", []),
+    }
+
+
 # =============================================================
 # Dashboard API endpoints (for lightweight Web UI)
 # 仪表板 API（轻量 Web UI 用）
@@ -7565,6 +7821,7 @@ async def api_config_get(request):
     persona_cfg = config.get("persona", {}) if isinstance(config.get("persona", {}), dict) else {}
     dream_cfg = config.get("dream", {}) if isinstance(config.get("dream", {}), dict) else {}
     reflection_cfg = config.get("reflection", {}) if isinstance(config.get("reflection", {}), dict) else {}
+    portrait_cfg = config.get("portrait", {}) if isinstance(config.get("portrait", {}), dict) else {}
     return JSONResponse({
         "dehydration": {
             "model": dehy.get("model", ""),
@@ -7694,6 +7951,26 @@ async def api_config_get(request):
             "api_key_masked": _mask_key(getattr(reflection_engine, "api_key", "") or reflection_cfg.get("api_key", "")),
             "api_ready": bool(getattr(reflection_engine, "api_key", "") or reflection_cfg.get("api_key", "")),
         },
+        "portrait": {
+            "enabled": bool(portrait_cfg.get("enabled", getattr(portrait_engine, "enabled", True))),
+            "auto_enabled": bool(portrait_cfg.get("auto_enabled", getattr(portrait_engine, "auto_enabled", True))),
+            "daily_enabled": bool(portrait_cfg.get("daily_enabled", getattr(portrait_engine, "daily_enabled", True))),
+            "model": getattr(portrait_engine, "model", portrait_cfg.get("model", "")),
+            "base_url": getattr(portrait_engine, "base_url", portrait_cfg.get("base_url", "")),
+            "api_key_masked": _mask_key(getattr(portrait_engine, "api_key", "") or portrait_cfg.get("api_key", "")),
+            "api_ready": bool(getattr(portrait_engine, "api_key", "") or portrait_cfg.get("api_key", "")),
+            "state_path": getattr(portrait_engine, "state_path", ""),
+            "daily_hour": portrait_cfg.get("daily_hour", getattr(portrait_engine, "daily_hour", 4)),
+            "check_interval_minutes": portrait_cfg.get(
+                "check_interval_minutes",
+                getattr(portrait_engine, "check_interval_minutes", 60),
+            ),
+            "material_limit": portrait_cfg.get("material_limit", getattr(portrait_engine, "material_limit", 18)),
+            "first_run_material_limit": portrait_cfg.get(
+                "first_run_material_limit",
+                getattr(portrait_engine, "first_run_material_limit", 80),
+            ),
+        },
         "merge_threshold": config.get("merge_threshold", 75),
         "transport": config.get("transport", "stdio"),
         "buckets_dir": config.get("buckets_dir", ""),
@@ -7705,7 +7982,7 @@ async def api_config_update(request):
     """Hot-update runtime config. Optionally persist to config.yaml."""
     from starlette.responses import JSONResponse
     import yaml
-    global dream_engine, persona_engine, reflection_engine
+    global dream_engine, persona_engine, portrait_engine, reflection_engine
     err = _require_dashboard_auth(request)
     if err:
         return err
@@ -8007,6 +8284,53 @@ async def api_config_update(request):
             os.environ["OMBRE_REFLECTION_MODEL"] = reflection_cfg["model"]
         reflection_engine = ReflectionEngine(config)
 
+    # --- Portrait maintainer config ---
+    if "portrait" in body:
+        p = body["portrait"]
+        portrait_cfg = config.setdefault("portrait", {})
+        for key in (
+            "enabled",
+            "auto_enabled",
+            "daily_enabled",
+        ):
+            if key in p:
+                portrait_cfg[key] = bool(p[key])
+                updated.append(f"portrait.{key}")
+        for key in (
+            "model",
+            "base_url",
+            "state_path",
+            "thinking_mode",
+        ):
+            if key in p:
+                portrait_cfg[key] = str(p[key] or "").strip()
+                updated.append(f"portrait.{key}")
+        for key in (
+            "temperature",
+            "max_tokens",
+            "daily_hour",
+            "check_interval_minutes",
+            "material_limit",
+            "first_run_material_limit",
+            "persona_events_limit",
+            "recent_buffer_max",
+            "staging_pool_max",
+            "candidate_max",
+        ):
+            if key in p:
+                portrait_cfg[key] = p[key]
+                updated.append(f"portrait.{key}")
+        if "api_key" in p and p["api_key"]:
+            portrait_cfg["api_key"] = str(p["api_key"])
+            os.environ["OMBRE_PORTRAIT_API_KEY"] = portrait_cfg["api_key"]
+            env_updates["OMBRE_PORTRAIT_API_KEY"] = portrait_cfg["api_key"]
+            updated.append("portrait.api_key")
+        if "base_url" in p and portrait_cfg.get("base_url"):
+            os.environ["OMBRE_PORTRAIT_BASE_URL"] = portrait_cfg["base_url"]
+        if "model" in p and portrait_cfg.get("model"):
+            os.environ["OMBRE_PORTRAIT_MODEL"] = portrait_cfg["model"]
+        portrait_engine = DailyPortraitMaintainer(config)
+
     # --- Dream config ---
     if "dream" in body:
         d = body["dream"]
@@ -8224,6 +8548,39 @@ async def api_config_update(request):
                 for key in ("model", "base_url"):
                     if key in body["reflection"]:
                         sc_reflection[key] = str(body["reflection"][key] or "").strip()
+                # Never persist api_key to yaml (use env var)
+
+            if "portrait" in body:
+                sc_portrait = save_config.setdefault("portrait", {})
+                for key in (
+                    "enabled",
+                    "auto_enabled",
+                    "daily_enabled",
+                ):
+                    if key in body["portrait"]:
+                        sc_portrait[key] = bool(body["portrait"][key])
+                for key in (
+                    "model",
+                    "base_url",
+                    "state_path",
+                    "thinking_mode",
+                ):
+                    if key in body["portrait"]:
+                        sc_portrait[key] = str(body["portrait"][key] or "").strip()
+                for key in (
+                    "temperature",
+                    "max_tokens",
+                    "daily_hour",
+                    "check_interval_minutes",
+                    "material_limit",
+                    "first_run_material_limit",
+                    "persona_events_limit",
+                    "recent_buffer_max",
+                    "staging_pool_max",
+                    "candidate_max",
+                ):
+                    if key in body["portrait"]:
+                        sc_portrait[key] = body["portrait"][key]
                 # Never persist api_key to yaml (use env var)
 
             if "dream" in body:
@@ -8588,6 +8945,32 @@ if __name__ == "__main__":
             rt = threading.Thread(target=_start_reflection_scheduler, daemon=True)
             rt.start()
             logger.info("Reflection scheduler enabled / 反思定时器已启用")
+
+        async def _portrait_loop():
+            await asyncio.sleep(25)
+            local_bucket_mgr = BucketManager(config)
+            local_persona_engine = PersonaStateEngine(config)
+            local_portrait_engine = DailyPortraitMaintainer(config)
+            while True:
+                try:
+                    results = await local_portrait_engine.run_due(
+                        local_bucket_mgr,
+                        local_persona_engine,
+                    )
+                    if results:
+                        logger.info("Portrait run-due results / 画像定时结果: %s", results)
+                except Exception as e:
+                    logger.warning("Portrait scheduler failed / 画像定时器失败: %s", e)
+                await asyncio.sleep(local_portrait_engine.check_interval_minutes * 60)
+
+        def _start_portrait_scheduler():
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_portrait_loop())
+
+        if portrait_engine.enabled and portrait_engine.auto_enabled:
+            pt = threading.Thread(target=_start_portrait_scheduler, daemon=True)
+            pt.start()
+            logger.info("Portrait scheduler enabled / 画像定时器已启用")
 
         async def _dream_loop():
             await asyncio.sleep(30)

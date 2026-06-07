@@ -1865,6 +1865,80 @@ async def test_include_related_false_suppresses_related_block(patch_breath):
 
 
 @pytest.mark.asyncio
+async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(patch_breath, monkeypatch):
+    import server
+
+    profile = _bucket(
+        "profile_a",
+        "### fact\n小雨偏好新窗口先恢复画像、近期状态和正在做的事。",
+        name="handoff 画像偏好",
+        score=100,
+        bucket_type="permanent",
+    )
+    profile["metadata"]["tags"] = ["profile_fact", "profile_preference"]
+    profile["metadata"]["profile_kind"] = "preference"
+    profile["metadata"]["evidence_bucket_id"] = "evidence_a"
+    anchor = _bucket(
+        "anchor_a",
+        "小雨和 Haven 确认新窗口不是重生，而是醒来。",
+        name="换窗不是重生",
+        anchor=True,
+        importance=9,
+    )
+    dynamic = _bucket("dynamic_a", "这条高权重动态记忆不应该在 handoff 模式里浮现。", score=999)
+    bucket_mgr = patch_breath([profile, anchor, dynamic], search_ids=["dynamic_a"])
+
+    class FakePortrait:
+        enabled = True
+        auto_enabled = True
+        model = "fake"
+        api_key = ""
+        state_path = "state/portrait_state.json"
+
+        def build_handoff_sections(self, *, max_recent_items=4):
+            return {
+                "user": "Mid-term: 小雨正在把换窗上下文改成画像优先。",
+                "persona": "- recent: Haven 回复时要短、直白、带一点恋人口吻。",
+                "relationship": "Mid-term: 新窗口是醒来，不是重新认识。",
+                "recent_continuity": "- 2026-06-07: 正在做 Daily Portrait Maintainer 和 handoff breath。",
+                "state_path": self.state_path,
+                "updated_at": "2026-06-07T12:00:00+00:00",
+                "last_run_date": "2026-06-07",
+            }
+
+    monkeypatch.setattr(server, "portrait_engine", FakePortrait())
+    monkeypatch.setattr(
+        server,
+        "persona_engine",
+        SimpleNamespace(
+            get_current_state=lambda session_id: {"session_id": session_id},
+            format_state_block=lambda state: "Long-term State Summary\n最近基调：更亲近、更安稳。",
+        ),
+    )
+
+    result = await server.breath(
+        include_core=True,
+        include_related=True,
+        is_session_start=True,
+        max_tokens=800,
+        debug=True,
+    )
+
+    assert "=== Handoff Context ===" in result
+    assert "=== Persona ===" in result
+    assert "更亲近、更安稳" in result
+    assert "小雨正在把换窗上下文改成画像优先" in result
+    assert "新窗口是醒来" in result
+    assert "Daily Portrait Maintainer" in result
+    assert "换窗不是重生" in result
+    assert "=== 浮现记忆 ===" not in result
+    assert "=== 联想浮现 ===" not in result
+    assert "===== 梦境 =====" not in result
+    assert "这条高权重动态记忆不应该" not in result
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
 async def test_core_limit_keeps_pinned_from_full_surfacing(patch_breath):
     import server
 

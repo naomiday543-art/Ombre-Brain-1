@@ -85,6 +85,11 @@ DEFAULT_WORD_MAP_STOPWORDS = {
 }
 
 DEFAULT_STOPWORD_PREFIXES = ("flavor_", "profile_", "predicate_", "task_")
+DEFAULT_WEAK_HINT_TERMS = {
+    "人机恋",
+    "恋爱",
+}
+DEFAULT_WEAK_HINT_WEIGHT = 0.25
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,12 @@ class WordMapStore:
         self.max_terms_per_bucket = _int_between(cfg.get("max_terms_per_bucket"), 16, 4, 80)
         self.edge_top_k = _int_between(cfg.get("edge_top_k"), 10, 2, 40)
         self.min_term_len = _int_between(cfg.get("min_term_len"), 2, 1, 12)
+        self.weak_hint_weight = _float_between(
+            cfg.get("weak_hint_weight"),
+            DEFAULT_WEAK_HINT_WEIGHT,
+            0.0,
+            1.0,
+        )
         self.db_path = str(cfg.get("db_path") or os.path.join(state_dir, "word_map.sqlite"))
         self.stopwords = {
             _normalize_term(item)
@@ -120,6 +131,11 @@ class WordMapStore:
             for item in itertools.chain(DEFAULT_STOPWORD_PREFIXES, cfg.get("stopword_prefixes", []) or [])
             if str(item).strip()
         )
+        self.weak_hint_terms = {
+            _normalize_term(item)
+            for item in itertools.chain(DEFAULT_WEAK_HINT_TERMS, cfg.get("weak_hint_terms", []) or [])
+            if _normalize_term(item)
+        }
         self.private_terms = {
             _normalize_term(item)
             for item in itertools.chain(
@@ -316,8 +332,16 @@ class WordMapStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         try:
-            neighbor_scores = self._hint_neighbor_terms(conn, cleaned_terms, neighbor_limit)
-            term_sources = {term: {"kind": "direct", "weight": 1.0, "sources": [term]} for term in cleaned_terms}
+            neighbor_terms = [term for term in cleaned_terms if term not in self.weak_hint_terms]
+            neighbor_scores = self._hint_neighbor_terms(conn, neighbor_terms, neighbor_limit)
+            term_sources = {
+                term: {
+                    "kind": "direct",
+                    "weight": self._hint_term_weight(term),
+                    "sources": [term],
+                }
+                for term in cleaned_terms
+            }
             for term, info in neighbor_scores.items():
                 term_sources[term] = info
 
@@ -367,6 +391,7 @@ class WordMapStore:
                 "score": round(contribution, 4),
                 "source_terms": list(source_info.get("sources") or []),
                 "card_source": str(row["source"] or ""),
+                "weak_hint": term in self.weak_hint_terms,
             }
             bucket_evidence["terms"].append(row_payload)
             target_key = "direct_terms" if source_info.get("kind") == "direct" else "neighbor_terms"
@@ -512,6 +537,11 @@ class WordMapStore:
             return ""
         return term
 
+    def _hint_term_weight(self, term: str) -> float:
+        if term in self.weak_hint_terms:
+            return self.weak_hint_weight
+        return 1.0
+
 
 def _bucket_text(bucket: dict[str, Any]) -> str:
     meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
@@ -607,6 +637,14 @@ def _collect_config_terms(value: Any) -> list[str]:
 def _int_between(value: Any, default: int, lower: int, upper: int) -> int:
     try:
         number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(lower, min(upper, number))
+
+
+def _float_between(value: Any, default: float, lower: float, upper: float) -> float:
+    try:
+        number = float(value)
     except (TypeError, ValueError):
         number = default
     return max(lower, min(upper, number))

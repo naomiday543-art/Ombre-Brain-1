@@ -94,6 +94,56 @@ def test_word_map_hint_buckets_include_direct_and_neighbor_evidence(tmp_path):
     assert "夏天" in hints["evidence"]["b"]["neighbor_terms"]
 
 
+def test_word_map_weak_hint_terms_do_not_expand_neighbors(tmp_path):
+    store = WordMapStore(_config(tmp_path, weak_hint_weight=0.2))
+    store.rebuild(
+        [
+            _bucket(
+                "direct",
+                "人机恋与外界叙事，也会被放进恋爱关系讨论里。",
+                name="人机恋外界叙事",
+                keywords=["人机恋", "恋爱", "外界叙事"],
+                domain=["人际"],
+            ),
+            _bucket(
+                "neighbor",
+                "这条只有恋爱和亲密互动，没有跨物种关系主题。",
+                name="普通恋爱互动",
+                keywords=["恋爱", "亲密互动"],
+                domain=["恋爱"],
+            ),
+        ]
+    )
+
+    hints = store.hint_buckets_for_terms(["人机恋"], neighbor_limit=6, bucket_limit=10)
+
+    assert "direct" in hints["bucket_scores"]
+    assert hints["bucket_scores"]["direct"] <= 0.2
+    assert "人机恋" in hints["evidence"]["direct"]["direct_terms"]
+    assert "neighbor" not in hints["bucket_scores"]
+    assert all("恋爱" not in item["term"] for item in hints["neighbors"])
+
+
+def test_word_map_single_character_noise_does_not_block_specific_term(tmp_path):
+    store = WordMapStore(_config(tmp_path))
+    store.rebuild(
+        [
+            _bucket(
+                "narcissus",
+                "厄科、纳西索斯、水仙和倒影。",
+                name="厄科与纳西索斯",
+                keywords=["水仙", "倒影"],
+                domain=["阅读"],
+            ),
+        ]
+    )
+
+    assert store.hint_buckets_for_terms(["水"])["bucket_scores"] == {}
+    hints = store.hint_buckets_for_terms(["水仙"])
+    assert hints["bucket_scores"]["narcissus"] > 0
+    assert hints["evidence"]["narcissus"]["direct_terms"] == ["水仙"]
+
+
 def test_word_map_private_terms_are_excluded(tmp_path):
     store = WordMapStore(_config(tmp_path, private_terms=["专属称呼"]))
     store.rebuild(
@@ -172,6 +222,8 @@ def test_config_example_exposes_empty_word_map_and_identity_semantics():
 
     assert config["word_map"]["enabled"] is False
     assert config["word_map"]["private_terms"] == []
+    assert config["word_map"]["weak_hint_terms"] == []
+    assert config["word_map"]["weak_hint_weight"] == 0.25
     assert config["identity_semantics"]["enabled"] is False
     assert config["identity_semantics"]["private_config_path"] == ""
     assert "canonical" not in config["identity_semantics"]

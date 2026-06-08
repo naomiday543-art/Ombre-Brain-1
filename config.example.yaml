@@ -205,6 +205,8 @@ word_map:
   stopwords: []                       # Extra generic stopwords / 额外通用停用词
   private_terms: []                   # Deployment-private terms to exclude from generic Word Map
   stopword_prefixes: []               # Extra prefixes such as custom_ / 额外前缀
+  weak_hint_terms: []                  # Extra broad terms whose word-map hints should not one-hop expand
+  weak_hint_weight: 0.25               # Direct hint weight for weak terms; keyword recall is unaffected
 
 # --- Private identity semantics / 私有身份语义 ---
 # Optional private canonical alias overlay. Do not put personal canonical nodes

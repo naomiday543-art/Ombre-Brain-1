@@ -98,23 +98,43 @@ DEFAULT_WORD_MAP_OVERVIEW_STOPWORDS = {
     "主动",
     "亲密",
     "亲密互动",
+    "互动模式",
     "人际",
     "关系",
     "关系天气",
     "内心",
     "兴趣",
     "回应",
+    "喜欢",
+    "命名日",
+    "天气",
+    "对话",
     "成长",
     "恋爱",
     "情感表达",
+    "情感连接",
     "情绪",
     "承诺",
+    "撒娇",
     "数字",
     "日印象",
     "日常",
+    "仪式感",
+    "凌晨",
+    "甜蜜",
     "社交",
+    "家庭",
     "编程",
     "自省",
+    "陪伴",
+    "归属感",
+    "小乖",
+    "birthday",
+    "fact",
+    "naming_day",
+    "profile",
+    "relationship_anchor",
+    "ritual",
 }
 DEFAULT_OVERVIEW_STOPWORD_PREFIXES = DEFAULT_STOPWORD_PREFIXES
 DEFAULT_WEAK_HINT_TERMS = {
@@ -307,21 +327,37 @@ class WordMapStore:
         try:
             rows = conn.execute(
                 """
-                SELECT * FROM word_nodes
-                ORDER BY bucket_count DESC, weight DESC, term ASC
-                LIMIT ?
-                """,
-                (min(5000, max(limit * 20, limit)),),
+                SELECT
+                    term,
+                    CASE
+                        WHEN SUM(CASE WHEN kind = 'subject' THEN 1 ELSE 0 END) > 0
+                            THEN 'subject'
+                        ELSE 'keyword'
+                    END AS kind,
+                    COUNT(DISTINCT bucket_id) AS bucket_count,
+                    SUM(weight) AS weight,
+                    MAX(weight) AS max_weight,
+                    MAX(updated_at) AS updated_at
+                FROM word_card_nodes
+                GROUP BY term
+                """
             ).fetchall()
             output = []
             for row in rows:
                 item = dict(row)
                 if self._is_overview_term_hidden(item.get("term")):
                     continue
+                item["overview_score"] = self._overview_node_score(item)
                 output.append(item)
-                if len(output) >= limit:
-                    break
-            return output
+            output.sort(
+                key=lambda item: (
+                    -float(item.get("overview_score") or 0.0),
+                    -float(item.get("max_weight") or 0.0),
+                    -float(item.get("weight") or 0.0),
+                    str(item.get("term") or ""),
+                )
+            )
+            return output[:limit]
         finally:
             conn.close()
 
@@ -335,10 +371,7 @@ class WordMapStore:
                 SELECT term_a, term_b, COUNT(*) AS bucket_count, SUM(weight) AS weight
                 FROM word_edges
                 GROUP BY term_a, term_b
-                ORDER BY bucket_count DESC, weight DESC, term_a ASC, term_b ASC
-                LIMIT ?
-                """,
-                (min(5000, max(limit * 30, limit)),),
+                """
             ).fetchall()
             output = []
             for row in rows:
@@ -347,10 +380,18 @@ class WordMapStore:
                     continue
                 if self._is_overview_term_hidden(item.get("term_b")):
                     continue
+                item["overview_score"] = self._overview_edge_score(item)
                 output.append(item)
-                if len(output) >= limit:
-                    break
-            return output
+            output.sort(
+                key=lambda item: (
+                    -float(item.get("overview_score") or 0.0),
+                    -float(item.get("weight") or 0.0),
+                    -int(item.get("bucket_count") or 0),
+                    str(item.get("term_a") or ""),
+                    str(item.get("term_b") or ""),
+                )
+            )
+            return output[:limit]
         finally:
             conn.close()
 
@@ -621,6 +662,25 @@ class WordMapStore:
         if any(term.startswith(prefix) for prefix in self.overview_stopword_prefixes):
             return True
         return False
+
+    @staticmethod
+    def _overview_node_score(item: dict[str, Any]) -> float:
+        try:
+            max_weight = float(item.get("max_weight") or item.get("weight") or 0.0)
+            bucket_count = max(1, int(item.get("bucket_count") or 1))
+        except (TypeError, ValueError):
+            return 0.0
+        subject_bonus = 1.35 if item.get("kind") == "subject" else 1.0
+        return round(max_weight * subject_bonus / (bucket_count ** 0.35), 4)
+
+    @staticmethod
+    def _overview_edge_score(item: dict[str, Any]) -> float:
+        try:
+            weight = float(item.get("weight") or 0.0)
+            bucket_count = max(1, int(item.get("bucket_count") or 1))
+        except (TypeError, ValueError):
+            return 0.0
+        return round(weight / (bucket_count ** 0.35), 4)
 
 
 def _bucket_text(bucket: dict[str, Any]) -> str:

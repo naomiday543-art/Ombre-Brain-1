@@ -175,7 +175,8 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
         ]
     )
 
-    overview_terms = {node["term"] for node in store.list_nodes(50)}
+    overview = store.list_nodes(50)
+    overview_terms = {node["term"] for node in overview}
     assert "恋爱" not in overview_terms
     assert "内心" not in overview_terms
     assert "wish" not in overview_terms
@@ -183,6 +184,8 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     assert "日印象" not in overview_terms
     assert "暗房" in overview_terms
     assert "流星" in overview_terms
+    assert "记忆不是表演" in {node["term"] for node in overview[:5]}
+    assert all("overview_score" in node for node in overview)
 
     overview_edge_terms = {
         term
@@ -191,6 +194,7 @@ def test_word_map_overview_hides_meta_and_broad_terms_without_hiding_cards(tmp_p
     }
     assert "恋爱" not in overview_edge_terms
     assert "日印象" not in overview_edge_terms
+    assert all("overview_score" in edge for edge in store.list_edges(50))
     assert store.cards_for_term("恋爱")
 
 

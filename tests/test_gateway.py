@@ -5022,7 +5022,11 @@ def test_gateway_memory_detail_recall_retries_with_allowed_bucket_id(
 
     def responder(body, _request, captured):
         if len(captured) == 1:
-            assert "Memory Detail Request" in _joined_message_content(body["messages"])
+            first_payload_content = _joined_message_content(body["messages"])
+            assert "Memory Detail Request" in first_payload_content
+            assert "Use only bucket_id values shown in this turn" in first_payload_content
+            assert "If Additional private memory detail is already present" in first_payload_content
+            assert "do not request memory_detail again" in first_payload_content
             return httpx.Response(
                 200,
                 json={

@@ -1336,7 +1336,9 @@ class GatewayService:
                     "but lacks needed detail, you may start your draft with exactly "
                     f"`[memory_detail ids=\"bucket_id_1,bucket_id_2\"]`. Use only bucket_id values "
                     f"shown in this turn, at most {self.memory_detail_recall_max_ids}. "
-                    "Do not mention this line in the final answer."
+                    "Do not guess IDs or request memories not shown in this turn. If Additional private "
+                    "memory detail is already present, use that detail directly and do not request "
+                    "memory_detail again. Do not mention this line in the final answer."
                 )
             reliable_dynamic_context = bool(recalled_memory.strip() or related_memory.strip())
             if not just_now_context_requested and self._should_inject_recent_context(

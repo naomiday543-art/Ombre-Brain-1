@@ -3034,7 +3034,10 @@ def _is_breath_recall_seed_bucket(bucket: dict | None) -> bool:
     if not isinstance(bucket, dict):
         return False
     meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
-    return meta.get("type") != "feel"
+    if meta.get("type") != "feel":
+        return True
+    tags = {str(tag).lower() for tag in meta.get("tags", []) or []}
+    return not ({"relationship_weather", "daily_impression", "weekly_impression"} & tags)
 
 
 def _breath_recall_seed_buckets(buckets: list[dict]) -> list[dict]:
@@ -3045,7 +3048,10 @@ def _moment_from_feel_bucket(moment: dict | None) -> bool:
     if not isinstance(moment, dict):
         return False
     meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
-    return meta.get("bucket_type") == "feel"
+    if meta.get("bucket_type") != "feel":
+        return False
+    tags = {str(tag).lower() for tag in meta.get("bucket_tags", []) or []}
+    return bool({"relationship_weather", "daily_impression", "weekly_impression"} & tags)
 
 
 def _recallable_moments(moments: list[dict]) -> list[dict]:

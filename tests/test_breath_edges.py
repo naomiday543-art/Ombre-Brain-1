@@ -789,12 +789,14 @@ async def test_diffused_memory_fallback_uses_title_not_raw_body(patch_breath):
 
 
 @pytest.mark.asyncio
-async def test_search_skips_feel_hits_without_touching(patch_breath):
+async def test_search_skips_relationship_weather_feel_hits_without_touching(patch_breath):
     import server
 
+    weather = _bucket("F", "F feel hit", bucket_type="feel", score=10.0)
+    weather["metadata"]["tags"] = ["relationship_weather", "daily_impression"]
     bucket_mgr = patch_breath(
         [
-            _bucket("F", "F feel hit", bucket_type="feel", score=10.0),
+            weather,
             _bucket("A", "A ordinary hit", score=9.0),
         ],
         search_ids=["F", "A"],
@@ -809,18 +811,32 @@ async def test_search_skips_feel_hits_without_touching(patch_breath):
 
 
 @pytest.mark.asyncio
-async def test_recall_debug_skips_feel_keyword_seed_and_moment_candidates(patch_breath):
+async def test_whisper_feel_is_not_removed_by_weather_seed_filter(patch_breath):
     import server
 
+    whisper = _bucket("W", "W whisper hit", bucket_type="feel", score=10.0)
+    whisper["metadata"]["tags"] = ["whisper"]
+    patch_breath([whisper], search_ids=["W"])
+
+    assert server._is_breath_recall_seed_bucket(whisper)
+    assert server._breath_recall_seed_buckets([whisper]) == [whisper]
+
+
+@pytest.mark.asyncio
+async def test_recall_debug_skips_relationship_weather_seed_and_moment_candidates(patch_breath):
+    import server
+
+    weather = _bucket(
+        "F",
+        "## moment\n日印象里提到小狗，但它不该作为普通召回 seed。",
+        name="2026-05-27 日印象",
+        bucket_type="feel",
+        score=10.0,
+    )
+    weather["metadata"]["tags"] = ["relationship_weather", "daily_impression"]
     patch_breath(
         [
-            _bucket(
-                "F",
-                "## moment\n日印象里提到小狗，但它不该作为普通召回 seed。",
-                name="2026-05-27 日印象",
-                bucket_type="feel",
-                score=10.0,
-            ),
+            weather,
         ],
         search_ids=["F"],
         embedding_engine=DummyEmbeddingEngine([]),
@@ -834,18 +850,20 @@ async def test_recall_debug_skips_feel_keyword_seed_and_moment_candidates(patch_
 
 
 @pytest.mark.asyncio
-async def test_word_map_hint_does_not_add_feel_seed(monkeypatch, patch_breath):
+async def test_word_map_hint_does_not_add_relationship_weather_seed(monkeypatch, patch_breath):
     import server
 
+    weather = _bucket(
+        "F",
+        "日印象里提到夏天。",
+        name="2026-05-27 日印象",
+        bucket_type="feel",
+        score=10.0,
+    )
+    weather["metadata"]["tags"] = ["relationship_weather", "daily_impression"]
     patch_breath(
         [
-            _bucket(
-                "F",
-                "日印象里提到夏天。",
-                name="2026-05-27 日印象",
-                bucket_type="feel",
-                score=10.0,
-            ),
+            weather,
         ],
         search_ids=[],
         embedding_engine=DummyEmbeddingEngine([]),

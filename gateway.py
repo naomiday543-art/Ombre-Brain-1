@@ -6653,7 +6653,37 @@ class GatewayService:
         )
         moment["admission_reason"] = decision.reason
         moment["recall_policy_debug"] = decision.debug
+        if (
+            decision.admit_direct
+            and decision.reason == "non_explicit_query"
+            and not self._unselected_moment_has_reliable_recall_signal(query, moment)
+        ):
+            moment["admission_reason"] = "non_explicit_query_score_too_low"
+            moment["recall_policy_debug"] = {
+                **decision.debug,
+                "unselected_moment_score": self._safe_float(
+                    moment.get("combined_score", moment.get("score")),
+                    0.0,
+                ),
+                "unselected_moment_min_score": self._unselected_moment_min_score(),
+                "has_topic_evidence": self._moment_has_query_topic_evidence(query, moment),
+            }
+            return False
         return decision.admit_direct
+
+    def _unselected_moment_min_score(self) -> float:
+        return min(
+            self.second_card_min_score,
+            max(0.30, self.first_card_min_score * 0.55),
+        )
+
+    def _unselected_moment_has_reliable_recall_signal(self, query: str, moment: dict) -> bool:
+        if self.recall_policy.has_strong_score(rerank_score=moment.get("rerank_score")):
+            return True
+        score = self._safe_float(moment.get("combined_score", moment.get("score")), 0.0)
+        if score < self._unselected_moment_min_score():
+            return False
+        return self._moment_has_query_topic_evidence(query, moment)
 
     def _get_keyword_candidates(self, query: str, buckets: list[dict]) -> dict[str, float]:
         scored = []

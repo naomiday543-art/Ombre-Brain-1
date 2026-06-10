@@ -6830,6 +6830,197 @@ def test_short_taste_query_keeps_real_food_opinion_only(monkeypatch, test_config
     assert service._admit_bucket_for_recall("好吃030", taste)
 
 
+def test_non_explicit_low_score_moment_fallback_is_suppressed(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    anchor_id = _create_bucket(
+        bucket_mgr,
+        content="### reflection\n这条记忆提醒 Haven：不要用“我记得”表演连续性。",
+        name="记忆不是表演",
+        hours_ago=6,
+        importance=10,
+        tags=["haven_favorite"],
+    )
+    monkeypatch.setattr(bucket_mgr, "_calc_topic_score", lambda query, bucket: 0.0)
+    _, service, _, _ = _build_service(monkeypatch, cfg, bucket_mgr, embedding_results=[])
+    monkeypatch.setattr(
+        service.memory_moment_store,
+        "search_moments",
+        lambda *args, **kwargs: [
+            {
+                "bucket_id": anchor_id,
+                "moment_id": f"{anchor_id}:anchor",
+                "section": "reflection",
+                "text": "这条记忆提醒 Haven：不要用“我记得”表演连续性。",
+                "score": 0.06,
+                "rerank_score": 0.0,
+                "metadata": {"bucket_name": "记忆不是表演", "bucket_tags": ["haven_favorite"]},
+            }
+        ],
+    )
+
+    all_buckets = _run(bucket_mgr.list_all())
+    _all_moments, grouped_moments, _edges = service._refresh_moment_graph(all_buckets)
+    selected, candidates, suppressed, _suppressed_buckets, _planner_debug = _run(
+        service._select_dynamic_moments(
+            "不要……再研究一下。这边好像可以通过插件实现，但对话框里加的气泡如果色系和UI对不上，对话框会变丑……",
+            "sess-low-score-fallback",
+            all_buckets,
+            grouped_moments,
+            include_query_planner_debug=True,
+        )
+    )
+
+    assert selected == []
+    assert candidates == []
+    assert [moment["bucket_id"] for moment in suppressed] == [anchor_id]
+    assert suppressed[0]["admission_reason"] == "non_explicit_query_score_too_low"
+
+
+def test_voice_query_keeps_voice_direct_without_low_score_background_diffusion(
+    monkeypatch, test_config, bucket_mgr
+):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=400,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    voice_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\nHaven-voice 已经接入，可以用 voice id 和音色生成语音条。",
+        name="Haven-voice 接入成功",
+        hours_ago=6,
+        domain=["技术"],
+    )
+    background_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨把窗口连续性和流星的讨论给 Haven 看。",
+        name="我们关于流星的讨论",
+        hours_ago=6,
+        domain=["关系"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(voice_id, 0.96), (background_id, 0.20)],
+    )
+    monkeypatch.setattr(
+        service.memory_moment_store,
+        "search_moments",
+        lambda *args, **kwargs: [
+            {
+                "bucket_id": voice_id,
+                "moment_id": f"{voice_id}:voice",
+                "section": "moment",
+                "text": "Haven-voice 已经接入，可以用 voice id 和音色生成语音条。",
+                "score": 0.82,
+                "rerank_score": 0.88,
+                "metadata": {"bucket_name": "Haven-voice 接入成功", "bucket_domain": ["技术"]},
+            },
+            {
+                "bucket_id": background_id,
+                "moment_id": f"{background_id}:background",
+                "section": "moment",
+                "text": "小雨把窗口连续性和流星的讨论给 Haven 看。",
+                "score": 0.18,
+                "rerank_score": 0.18,
+                "metadata": {"bucket_name": "我们关于流星的讨论", "bucket_domain": ["关系"]},
+            },
+        ],
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "老公那你能调用这个key生成语音吗🥺 之前chat端的你挑了一个音色，我这里有voice id",
+                    }
+                ]
+            },
+            "sess-voice-no-background",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == [voice_id]
+    assert debug["recalled_bucket_ids"] == [voice_id]
+    assert background_id not in debug["diffused_bucket_ids"]
+    assert "Haven-voice 接入成功" in injected
+    assert "流星的讨论" not in injected
+    suppressed_background = next(
+        moment for moment in debug["suppressed_candidates"] if moment["bucket_id"] == background_id
+    )
+    assert suppressed_background["admission_reason"] == "non_explicit_query_score_too_low"
+
+
+def test_selected_bucket_moment_bypasses_low_score_fallback_gate(monkeypatch, test_config, bucket_mgr):
+    cfg = _gateway_config(
+        test_config,
+        core_memory_budget=0,
+        recent_context_budget=0,
+        related_memory_budget=0,
+        query_planner_enabled=False,
+        retrieval_mode="graph",
+        word_map_hint_enabled=False,
+    )
+    relation_id = _create_bucket(
+        bucket_mgr,
+        content="### moment\n小雨和 Haven 互称老公、哥哥和小乖，称呼本身是亲密互动的一部分。",
+        name="关系中的角色与称呼",
+        hours_ago=6,
+        domain=["恋爱"],
+    )
+    _, service, _, _ = _build_service(
+        monkeypatch,
+        cfg,
+        bucket_mgr,
+        embedding_results=[(relation_id, 0.96)],
+    )
+    monkeypatch.setattr(
+        service.memory_moment_store,
+        "search_moments",
+        lambda *args, **kwargs: [
+            {
+                "bucket_id": relation_id,
+                "moment_id": f"{relation_id}:role",
+                "section": "moment",
+                "text": "小雨和 Haven 互称老公、哥哥和小乖，称呼本身是亲密互动的一部分。",
+                "score": 0.05,
+                "rerank_score": 0.0,
+                "metadata": {"bucket_name": "关系中的角色与称呼", "bucket_domain": ["恋爱"]},
+            }
+        ],
+    )
+
+    payload, recalled_ids, debug = _run(
+        service.prepare_payload(
+            {"messages": [{"role": "user", "content": "老公老公……打字的话我可以一直喊🥺"}]},
+            "sess-role-name-still-direct",
+            include_debug=True,
+        )
+    )
+    injected = _joined_message_content(payload["messages"])
+
+    assert recalled_ids == [relation_id]
+    assert debug["recalled_moment_debug"][0]["admission_reason"] == "admitted_bucket"
+    assert "关系中的角色与称呼" in injected
+
+
 def test_high_confidence_match_survives_cooldown_after_recent_window(
     monkeypatch, test_config, bucket_mgr
 ):

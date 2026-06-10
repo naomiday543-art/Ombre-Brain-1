@@ -219,6 +219,7 @@ class DailyPortraitMaintainer:
             # Initial portrait generation scans broad history; its summary is not a real daily recap.
             normalized_patch["daily_summary"] = ""
             self._demote_initial_old_recent(normalized_patch, materials)
+        self._seed_missing_mid_terms(normalized_patch, state)
         handoff_summaries = self._build_handoff_recent_summaries(
             materials,
             normalized_patch,
@@ -706,6 +707,57 @@ class DailyPortraitMaintainer:
             else:
                 patch.setdefault("skip", []).append({"text": item.get("text", ""), "scope": "user"})
         patch["add_recent_activity"] = kept_activities
+
+    def _seed_missing_mid_terms(self, patch: dict, state: dict) -> None:
+        portrait = state.get("portrait", {}) if isinstance(state.get("portrait"), dict) else {}
+        existing_scopes = {
+            str(item.get("scope") or "")
+            for item in patch.get("rewrite_mid_term", []) or []
+            if isinstance(item, dict)
+        }
+        by_scope: dict[str, list[dict]] = {scope: [] for scope in PORTRAIT_SCOPES}
+        for scope in PORTRAIT_SCOPES:
+            scope_state = portrait.get(scope, {}) if isinstance(portrait.get(scope), dict) else {}
+            for row in scope_state.get("staging_pool", []) or []:
+                if isinstance(row, dict):
+                    by_scope[scope].append(row)
+        for item in patch.get("move_to_staging", []) or []:
+            if not isinstance(item, dict):
+                continue
+            scope = str(item.get("scope") or "")
+            if scope in by_scope:
+                by_scope[scope].append(item)
+        for scope in PORTRAIT_SCOPES:
+            scope_state = portrait.get(scope, {}) if isinstance(portrait.get(scope), dict) else {}
+            if scope in existing_scopes or str(scope_state.get("mid_term") or "").strip():
+                continue
+            rows = by_scope.get(scope, [])
+            if not rows:
+                continue
+            texts = []
+            evidence = []
+            source_dates = []
+            confidence = 0.55
+            for row in rows[:3]:
+                text = self._clip(row.get("text") or "", 120)
+                if text and self._norm(text) not in {self._norm(item) for item in texts}:
+                    texts.append(text)
+                evidence.extend(row.get("evidence", []) or [])
+                source_dates = self._merge_source_dates(source_dates, row.get("source_dates", []))
+                source_dates = self._merge_source_dates(source_dates, row.get("source_date", ""))
+                confidence = max(confidence, float(row.get("confidence") or 0.0))
+            if not texts or not evidence:
+                continue
+            patch.setdefault("rewrite_mid_term", []).append(
+                {
+                    "scope": scope,
+                    "text": self._clip("；".join(texts), 260),
+                    "evidence": self._dedupe_evidence(evidence),
+                    "source_dates": source_dates,
+                    "source_date": source_dates[0] if source_dates else "",
+                    "confidence": confidence,
+                }
+            )
 
     def _annotate_patch_source_dates(self, patch: dict, materials: dict) -> None:
         bucket_dates = {

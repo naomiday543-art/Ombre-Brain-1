@@ -470,6 +470,47 @@ def test_portrait_mid_term_rewrite_requires_staging_evidence(tmp_path, test_conf
     assert normalized["rewrite_mid_term"][0]["evidence"] == [{"bucket_id": "fresh-bucket"}]
 
 
+def test_portrait_seeds_missing_mid_term_from_staging(tmp_path, test_config):
+    state_path = tmp_path / "state" / "portrait_state.json"
+    engine = DailyPortraitMaintainer(
+        {
+            **test_config,
+            "portrait": {
+                "enabled": True,
+                "state_path": str(state_path),
+            },
+        }
+    )
+    state = engine._empty_state()
+    state["portrait"]["relationship"]["staging_pool"].append(
+        {
+            "text": "小雨和Haven最近在确认换窗后的连续感。",
+            "evidence": [{"bucket_id": "staging-bucket"}],
+            "source_dates": ["2026-06-10"],
+            "confidence": 0.78,
+        }
+    )
+    patch = {
+        "add_recent": [],
+        "add_recent_activity": [],
+        "move_to_staging": [],
+        "rewrite_mid_term": [],
+    }
+
+    engine._seed_missing_mid_terms(patch, state)
+
+    assert patch["rewrite_mid_term"] == [
+        {
+            "scope": "relationship",
+            "text": "小雨和Haven最近在确认换窗后的连续感。",
+            "evidence": [{"bucket_id": "staging-bucket"}],
+            "source_dates": ["2026-06-10"],
+            "source_date": "2026-06-10",
+            "confidence": 0.78,
+        }
+    ]
+
+
 def test_portrait_rewrite_stable_updates_scope_paragraph_with_source_dates(tmp_path, test_config):
     state_path = tmp_path / "state" / "portrait_state.json"
     engine = DailyPortraitMaintainer(

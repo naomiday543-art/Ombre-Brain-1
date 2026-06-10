@@ -179,6 +179,7 @@ def test_dashboard_exposes_portrait_state_panel():
     assert "runPortraitMaintain" in html
     assert "resetPortraitState" in html
     assert "Recent Timeline" in html
+    assert "var deleteSpec = item._delete ? escAttr(jsString(JSON.stringify(item._delete))) : '';" in html
     assert "renderPortraitState" in html
     assert "renderPortraitScope" in html
     assert "renderPortraitCandidates" in html

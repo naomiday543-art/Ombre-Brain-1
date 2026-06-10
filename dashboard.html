@@ -3464,8 +3464,9 @@ function renderPortraitRow(item) {
   if (item.count) meta.push('seen ' + item.count);
   var dateLabel = portraitRowDateLabel(item);
   if (dateLabel) meta.push(dateLabel);
-  var deleteButton = item._delete
-    ? '<button type="button" class="danger" onclick="deletePortraitStateItem(\'' + jsString(JSON.stringify(item._delete)) + '\')">删除</button>'
+  var deleteSpec = item._delete ? escAttr(jsString(JSON.stringify(item._delete))) : '';
+  var deleteButton = deleteSpec
+    ? '<button type="button" class="danger" onclick="deletePortraitStateItem(\'' + deleteSpec + '\')">删除</button>'
     : '';
   return '<div class="portrait-row">' +
     '<div class="portrait-row-text">' + esc(text) + '</div>' +

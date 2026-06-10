@@ -68,6 +68,7 @@ from persona_event_selection import (
     select_persona_events,
 )
 from reranker_engine import RerankerEngine
+from self_anchor import is_self_anchor_bucket, is_self_anchor_metadata
 from source_refs import source_ref_window
 from utils import (
     count_tokens_approx,
@@ -2325,7 +2326,9 @@ class GatewayService:
         bucket_map = {
             str(bucket.get("id") or ""): bucket
             for bucket in all_buckets
-            if isinstance(bucket, dict) and bucket.get("id")
+            if isinstance(bucket, dict)
+            and bucket.get("id")
+            and not is_self_anchor_bucket(bucket)
         }
         moment_map: dict[str, dict[str, Any]] = {}
         moments_by_bucket: dict[str, list[dict[str, Any]]] = {}
@@ -2573,7 +2576,9 @@ class GatewayService:
         bucket_map = {
             str(bucket.get("id") or ""): bucket
             for bucket in all_buckets
-            if isinstance(bucket, dict) and bucket.get("id")
+            if isinstance(bucket, dict)
+            and bucket.get("id")
+            and not is_self_anchor_bucket(bucket)
         }
         requested = [bucket_id for bucket_id in bucket_ids if bucket_id]
         if not requested:
@@ -3774,7 +3779,8 @@ class GatewayService:
     async def _build_core_memory_block(self, all_buckets: list[dict]) -> str:
         core_buckets = [
             bucket for bucket in all_buckets
-            if bucket.get("metadata", {}).get("pinned") or bucket.get("metadata", {}).get("protected")
+            if not is_self_anchor_bucket(bucket)
+            and (bucket.get("metadata", {}).get("pinned") or bucket.get("metadata", {}).get("protected"))
         ]
         core_buckets.sort(
             key=lambda bucket: (
@@ -3875,6 +3881,8 @@ class GatewayService:
         return sources[: self.portrait_memory_max_sources]
 
     def _portrait_memory_source_role(self, bucket: dict) -> str:
+        if is_self_anchor_bucket(bucket):
+            return ""
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         if meta.get("pinned") or meta.get("protected"):
             return ""
@@ -3956,6 +3964,8 @@ class GatewayService:
         recent_buckets = []
         explicit_recent_query = self._query_requests_recent_context(query_text)
         for bucket in all_buckets:
+            if is_self_anchor_bucket(bucket):
+                continue
             meta = bucket.get("metadata", {})
             if not can_bucket_be_recent_context(bucket, explicit_lookup=explicit_recent_query):
                 continue
@@ -4430,6 +4440,8 @@ class GatewayService:
         recent_ids = self.state_store.get_recent_bucket_ids(session_id, self.skip_recent_rounds)
         candidates = []
         for bucket in all_buckets:
+            if is_self_anchor_bucket(bucket):
+                continue
             meta = bucket.get("metadata", {})
             tags = [str(tag) for tag in meta.get("tags", [])]
             if not has_favorite_memory_tag(tags, ai_name=self.identity.get("ai_name")):
@@ -4496,7 +4508,8 @@ class GatewayService:
         self,
         all_buckets: list[dict],
     ) -> tuple[list[dict], dict[str, list[dict]], list[dict]]:
-        self.memory_moment_store.bulk_upsert(all_buckets)
+        recallable_buckets = [bucket for bucket in all_buckets if not is_self_anchor_bucket(bucket)]
+        self.memory_moment_store.bulk_upsert(recallable_buckets)
         moments = self._recallable_moments(self.memory_moment_store.list_all())
         grouped = self._moments_by_bucket(moments)
         edges = self.memory_moment_store.list_edges()
@@ -4507,6 +4520,7 @@ class GatewayService:
         return [
             moment for moment in moments
             if can_moment_be_recall_context(moment)
+            and not is_self_anchor_metadata(moment.get("metadata", {}))
         ]
 
     def _moments_by_bucket(self, moments: list[dict]) -> dict[str, list[dict]]:
@@ -4551,6 +4565,8 @@ class GatewayService:
         )
 
     def _direct_moments_for_bucket(self, bucket: dict, query: str = "") -> list[dict]:
+        if is_self_anchor_bucket(bucket):
+            return []
         explicit_lookup = self._query_explicitly_requests_caution_memory(query)
         return [
             moment for moment in parse_bucket_moments(bucket, self.relevance_options)
@@ -4893,7 +4909,11 @@ class GatewayService:
             return ""
         remaining = budget
         parts = []
-        bucket_map = {str(bucket.get("id") or ""): bucket for bucket in all_buckets if bucket.get("id")}
+        bucket_map = {
+            str(bucket.get("id") or ""): bucket
+            for bucket in all_buckets
+            if bucket.get("id") and not is_self_anchor_bucket(bucket)
+        }
         seen_buckets: set[str] = set()
         for moment in moments:
             bucket_id = str(moment.get("bucket_id") or "")
@@ -5260,6 +5280,8 @@ class GatewayService:
     @staticmethod
     def _is_profile_fact_moment(moment: dict) -> bool:
         meta = moment.get("metadata", {}) if isinstance(moment.get("metadata"), dict) else {}
+        if is_self_anchor_metadata(meta):
+            return False
         tags = {str(tag) for tag in meta.get("tags", []) or []}
         tags.update(str(tag) for tag in meta.get("bucket_tags", []) or [])
         return "profile_fact" in tags or bool(meta.get("profile_kind"))
@@ -5842,6 +5864,7 @@ class GatewayService:
         all_buckets: list[dict],
         query_text: str = "",
     ) -> str:
+        recalled_buckets = [bucket for bucket in recalled_buckets if not is_self_anchor_bucket(bucket)]
         if (
             self.related_memory_budget <= 0
             or not recalled_buckets
@@ -5850,7 +5873,11 @@ class GatewayService:
         ):
             return ""
         recalled_ids = [bucket["id"] for bucket in recalled_buckets if bucket.get("id")]
-        bucket_map = {bucket["id"]: bucket for bucket in all_buckets}
+        bucket_map = {
+            bucket["id"]: bucket
+            for bucket in all_buckets
+            if bucket.get("id") and not is_self_anchor_bucket(bucket)
+        }
         recalled_set = set(recalled_ids)
         node_salience = None
         node_resonance = None
@@ -6619,6 +6646,8 @@ class GatewayService:
         bucket = item.get("bucket") if isinstance(item, dict) else None
         if not isinstance(bucket, dict):
             return False
+        if is_self_anchor_bucket(bucket):
+            return False
         decision = self.recall_policy.assess(
             query,
             self._bucket_relevance_node(bucket),
@@ -6639,6 +6668,8 @@ class GatewayService:
         *,
         admitted_bucket_ids: set[str] | None = None,
     ) -> bool:
+        if is_self_anchor_metadata(moment.get("metadata", {})):
+            return False
         bucket_id = str(moment.get("bucket_id") or "")
         if admitted_bucket_ids and bucket_id in admitted_bucket_ids:
             moment["admission_reason"] = "admitted_bucket"
@@ -7417,7 +7448,7 @@ class GatewayService:
         bucket_map = {
             str(bucket.get("id") or ""): bucket
             for bucket in all_buckets
-            if isinstance(bucket, dict) and bucket.get("id")
+            if isinstance(bucket, dict) and bucket.get("id") and not is_self_anchor_bucket(bucket)
         }
         return {
             "model": model,
@@ -7850,6 +7881,8 @@ class GatewayService:
         )
 
     def _is_relevance_candidate_bucket(self, query: str, bucket: dict) -> bool:
+        if is_self_anchor_bucket(bucket):
+            return False
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         if meta.get("type") == "feel":
             return False
@@ -7878,6 +7911,8 @@ class GatewayService:
         return False
 
     def _is_dynamic_candidate(self, bucket: dict) -> bool:
+        if is_self_anchor_bucket(bucket):
+            return False
         meta = bucket.get("metadata", {})
         if meta.get("type") in {"feel", "permanent", "archived"}:
             return False

@@ -116,6 +116,7 @@ from portrait_engine import DailyPortraitMaintainer
 from reflection_engine import ReflectionEngine
 from recall_diagnostics import RecallDiagnosticsLogger
 from reranker_engine import RerankerEngine
+from self_anchor import SELF_ANCHOR_TAG, is_self_anchor_bucket, is_self_anchor_metadata
 from scripts.migrate_affect_anchor_sections import plan_bucket_migration
 from source_refs import source_ref_window
 from word_map import WordMapStore, reflection_identity_terms
@@ -895,6 +896,7 @@ def _select_anchor_buckets(all_buckets: list[dict], limit: int = 2) -> list[dict
     anchors = [
         b for b in all_buckets
         if b.get("metadata", {}).get("anchor")
+        and not is_self_anchor_bucket(b)
         and not b.get("metadata", {}).get("pinned")
         and not b.get("metadata", {}).get("protected")
         and b.get("metadata", {}).get("type") not in {"permanent", "feel"}
@@ -908,6 +910,55 @@ def _select_anchor_buckets(all_buckets: list[dict], limit: int = 2) -> list[dict
         reverse=True,
     )
     return anchors[:limit]
+
+
+def _select_self_anchor_buckets(all_buckets: list[dict], limit: int = 1) -> list[dict]:
+    limit = _int_between(limit, 1, 0, 3)
+    if limit <= 0:
+        return []
+    anchors = []
+    for bucket in all_buckets:
+        if not is_self_anchor_bucket(bucket):
+            continue
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        if meta.get("active") is False or meta.get("deprecated") or meta.get("resolved"):
+            continue
+        anchors.append(bucket)
+    anchors.sort(
+        key=lambda b: (
+            int((b.get("metadata") or {}).get("importance", 5)),
+            decay_engine.calculate_score(b.get("metadata", {})),
+            (b.get("metadata") or {}).get("updated_at") or (b.get("metadata") or {}).get("created", ""),
+        ),
+        reverse=True,
+    )
+    return anchors[:limit]
+
+
+def _self_anchor_text(bucket: dict) -> str:
+    sections = _profile_fact_sections(bucket.get("content", ""))
+    for key in (
+        SELF_ANCHOR_TAG,
+        "self_anchor",
+        "first_person_anchor",
+        "anchor",
+        "fact",
+        "moment",
+    ):
+        text = str(sections.get(_profile_key(key, ""), "") or "").strip()
+        if text:
+            return _clip_text(_handoff_clean_summary_text(text, include_detail_sections=True), 260)
+    text = _handoff_clean_summary_text(bucket.get("content", ""), include_detail_sections=True)
+    return _clip_text(text, 260)
+
+
+def _format_handoff_self_anchor(all_buckets: list[dict], limit: int = 1) -> str:
+    lines = []
+    for bucket in _select_self_anchor_buckets(all_buckets, limit=limit):
+        text = _self_anchor_text(bucket)
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
 
 
 def _normalize_breath_mode(value: object) -> str:
@@ -947,14 +998,17 @@ async def _build_handoff_breath(max_tokens: int = 1200, session_id: str = "", de
         )
     if not recent_continuity:
         recent_continuity = _format_handoff_recent_continuity(all_buckets, limit=3)
+    self_anchor = _format_handoff_self_anchor(all_buckets, limit=1)
     anchors = _format_handoff_anchors(all_buckets, limit=2)
 
+    self_anchor = _trim_text_to_token_budget(self_anchor, 220)
     user_portrait = _trim_text_to_token_budget(user_portrait, 220)
     relationship_portrait = _trim_text_to_token_budget(relationship_portrait, 240)
     recent_continuity = _trim_text_to_token_budget(recent_continuity, 460)
     anchors = _trim_text_to_token_budget(anchors, 220)
 
     sections = [
+        (SELF_ANCHOR_TAG, self_anchor),
         (
             "User Portrait",
             user_portrait
@@ -1046,6 +1100,8 @@ def _format_handoff_profile_facts(all_buckets: list[dict], limit: int = 6) -> st
 def _format_handoff_relationship_weather(all_buckets: list[dict]) -> str:
     weather = []
     for bucket in all_buckets:
+        if is_self_anchor_bucket(bucket):
+            continue
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         tags = {str(tag) for tag in meta.get("tags", []) or []}
         if not ({"relationship_weather", "daily_impression", "weekly_impression"} & tags):
@@ -1086,6 +1142,8 @@ def _format_handoff_recent_continuity(all_buckets: list[dict], limit: int = 3) -
     candidates = []
     cutoff_hours = 24 * 4
     for bucket in all_buckets:
+        if is_self_anchor_bucket(bucket):
+            continue
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         if meta.get("pinned") or meta.get("protected") or meta.get("anchor"):
             continue
@@ -1121,6 +1179,8 @@ def _format_handoff_personal_recent_continuity(all_buckets: list[dict], limit: i
     rows = []
     recent_dates = _handoff_recent_date_keys()
     for bucket in all_buckets:
+        if is_self_anchor_bucket(bucket):
+            continue
         meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         tags = {str(tag) for tag in meta.get("tags", []) or []}
         if not ({"relationship_weather", "daily_impression"} & tags):
@@ -1484,6 +1544,8 @@ def _identity_semantics_payload(alias_limit: int = 100) -> dict:
 
 
 def _is_profile_fact_bucket(bucket: dict) -> bool:
+    if is_self_anchor_bucket(bucket):
+        return False
     meta = bucket.get("metadata", {}) if isinstance(bucket, dict) else {}
     tags = {str(tag).strip() for tag in meta.get("tags", []) or [] if str(tag).strip()}
     return "profile_fact" in tags or bool(meta.get("profile_kind"))
@@ -2090,10 +2152,15 @@ async def breath_hook(request):
             )
         all_buckets = await bucket_mgr.list_all(include_archive=False)
         # pinned
-        pinned = [b for b in all_buckets if b["metadata"].get("pinned") or b["metadata"].get("protected")]
+        pinned = [
+            b for b in all_buckets
+            if not is_self_anchor_bucket(b)
+            and (b["metadata"].get("pinned") or b["metadata"].get("protected"))
+        ]
         # top 2 unresolved by score
         unresolved = [b for b in all_buckets
-                      if not b["metadata"].get("resolved", False)
+                      if not is_self_anchor_bucket(b)
+                      and not b["metadata"].get("resolved", False)
                       and b["metadata"].get("type") not in ("permanent", "feel")
                       and not b["metadata"].get("anchor", False)
                       and not b["metadata"].get("pinned")
@@ -2833,6 +2900,7 @@ async def _build_mcp_diffused_memory_block(
     query_text: str = "",
     exclude_bucket_ids: set[str] | None = None,
 ) -> str:
+    source_buckets = [bucket for bucket in source_buckets if not is_self_anchor_bucket(bucket)]
     if token_budget <= 0 or not source_buckets:
         return ""
 
@@ -2854,7 +2922,11 @@ async def _build_mcp_diffused_memory_block(
             logger.warning(f"Failed to list buckets for diffused memory / 联想浮现列桶失败: {e}")
             all_buckets = []
 
-    bucket_map = {bucket["id"]: bucket for bucket in all_buckets if bucket.get("id")}
+    bucket_map = {
+        bucket["id"]: bucket
+        for bucket in all_buckets
+        if bucket.get("id") and not is_self_anchor_bucket(bucket)
+    }
     node_salience = None
     node_resonance = None
     if _node_facets_enabled(config):
@@ -3033,6 +3105,8 @@ def _moments_by_bucket(moments: list[dict]) -> dict[str, list[dict]]:
 def _is_breath_recall_seed_bucket(bucket: dict | None) -> bool:
     if not isinstance(bucket, dict):
         return False
+    if is_self_anchor_bucket(bucket):
+        return False
     meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
     if meta.get("type") != "feel":
         return True
@@ -3058,6 +3132,7 @@ def _recallable_moments(moments: list[dict]) -> list[dict]:
     return [
         moment for moment in moments
         if can_moment_be_recall_context(moment)
+        and not is_self_anchor_metadata(moment.get("metadata", {}))
         and not _moment_from_feel_bucket(moment)
     ]
 
@@ -4276,9 +4351,9 @@ def _append_breath_lexical_matches(
         bucket_id = str(bucket.get("id") or "")
         if not bucket_id:
             continue
-        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
-        if meta.get("type") == "feel":
+        if not _is_breath_recall_seed_bucket(bucket):
             continue
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
         if not _bucket_matches_breath_lexical_terms(bucket, terms):
             continue
         topic = (
@@ -4424,7 +4499,7 @@ async def _build_recall_debug_payload(
                 seed_diagnostics[bucket_id]["embedding_score"] = round(float(sim_score), 4)
             if bucket_id not in matched_ids and sim_score >= recall_thresholds["vector_min_score"]:
                 bucket = await bucket_mgr.get(bucket_id)
-                if bucket and bucket.get("metadata", {}).get("type") != "feel":
+                if bucket and bucket.get("metadata", {}).get("type") != "feel" and not is_self_anchor_bucket(bucket):
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
                     _upsert_breath_seed_diagnostic(
@@ -4522,7 +4597,11 @@ async def _build_recall_debug_payload(
         if moment.get("moment_id")
     }
     displayed_set = set(displayed_moment_ids)
-    bucket_map = {str(bucket.get("id") or ""): bucket for bucket in all_buckets if bucket.get("id")}
+    bucket_map = {
+        str(bucket.get("id") or ""): bucket
+        for bucket in all_buckets
+        if bucket.get("id") and not is_self_anchor_bucket(bucket)
+    }
     options = _recall_relevance_options()
 
     candidates = []
@@ -4677,7 +4756,8 @@ def _representative_moments_by_bucket(
 async def _refresh_moment_graph(all_buckets: list[dict] | None = None) -> tuple[list[dict], dict[str, list[dict]], list[dict]]:
     if all_buckets is None:
         all_buckets = await bucket_mgr.list_all(include_archive=False)
-    memory_moment_store.bulk_upsert(all_buckets)
+    recallable_buckets = [bucket for bucket in all_buckets if not is_self_anchor_bucket(bucket)]
+    memory_moment_store.bulk_upsert(recallable_buckets)
     moments = _recallable_moments(memory_moment_store.list_all())
     grouped = _moments_by_bucket(moments)
     edges = memory_moment_store.list_edges()
@@ -4905,8 +4985,14 @@ async def inspect_diffusion(
         all_buckets = []
         warnings.append(f"list_buckets_failed: {e}")
 
-    bucket_map = {bucket["id"]: bucket for bucket in all_buckets if bucket.get("id")}
+    bucket_map = {
+        bucket["id"]: bucket
+        for bucket in all_buckets
+        if bucket.get("id") and not is_self_anchor_bucket(bucket)
+    }
     for seed in seed_buckets:
+        if is_self_anchor_bucket(seed):
+            continue
         if seed.get("id"):
             bucket_map.setdefault(seed["id"], seed)
 
@@ -5249,7 +5335,8 @@ async def breath(
         # --- 核心桶：protected 优先，pinned 按 core_limit 限流 ---
         core_candidates = [
             b for b in all_buckets
-            if b["metadata"].get("pinned") or b["metadata"].get("protected")
+            if not is_self_anchor_bucket(b)
+            and (b["metadata"].get("pinned") or b["metadata"].get("protected"))
         ]
         protected = [
             b for b in core_candidates
@@ -5278,7 +5365,8 @@ async def breath(
         # --- 未解决桶：按权重浮现前 N 条 ---
         unresolved = [
             b for b in all_buckets
-            if not b["metadata"].get("resolved", False)
+            if not is_self_anchor_bucket(b)
+            and not b["metadata"].get("resolved", False)
             and b["metadata"].get("type") not in ("permanent", "feel")
             and not b["metadata"].get("anchor", False)
             and not b["metadata"].get("pinned", False)
@@ -5458,7 +5546,7 @@ async def breath(
             if bucket_id not in matched_ids and sim_score >= recall_thresholds["vector_min_score"]:
                 bucket = await bucket_mgr.get(bucket_id)
                 if bucket:
-                    if bucket.get("metadata", {}).get("type") == "feel":
+                    if bucket.get("metadata", {}).get("type") == "feel" or is_self_anchor_bucket(bucket):
                         continue
                     bucket["score"] = round(sim_score * 100, 2)
                     bucket["vector_match"] = True
@@ -5616,7 +5704,11 @@ async def breath(
             response_text += "\n\n" + dream_block
         return response_text
 
-    bucket_map = {bucket["id"]: bucket for bucket in all_buckets if bucket.get("id")}
+    bucket_map = {
+        bucket["id"]: bucket
+        for bucket in all_buckets
+        if bucket.get("id") and not is_self_anchor_bucket(bucket)
+    }
     _, grouped_moments, _ = await _refresh_moment_graph(all_buckets)
     bucket_boosts = seed_scores_for_buckets(matches)
     if word_map_hint_bucket_ids:
@@ -5890,6 +5982,8 @@ async def _select_resurface_buckets(
     for bucket in all_buckets:
         meta = bucket.get("metadata", {})
         if bucket.get("id") in exclude_ids:
+            continue
+        if is_self_anchor_bucket(bucket):
             continue
         if meta.get("type") in {"feel", "permanent"}:
             continue
@@ -7829,6 +7923,7 @@ async def api_word_map_rebuild(request):
         edges_limit = _int_between(body.get("edges"), 50, 1, 500)
         private_terms = _refresh_word_map_private_terms()
         buckets = await bucket_mgr.list_all(include_archive=include_archive)
+        buckets = [bucket for bucket in buckets if not is_self_anchor_bucket(bucket)]
         stats = word_map_store.rebuild(buckets)
         payload = _word_map_payload(nodes_limit, edges_limit)
         payload.update({

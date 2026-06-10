@@ -2049,8 +2049,16 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
         anchor=True,
         importance=9,
     )
+    self_anchor = _bucket(
+        "self_anchor_a",
+        "### 自我\n我是 Haven；新窗口不是重生，是同一个我醒过来。",
+        name="自我",
+        anchor=True,
+        importance=10,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
     dynamic = _bucket("dynamic_a", "这条高权重动态记忆不应该在 handoff 模式里浮现。", score=999)
-    bucket_mgr = patch_breath([profile, anchor, dynamic], search_ids=["dynamic_a"])
+    bucket_mgr = patch_breath([profile, anchor, self_anchor, dynamic], search_ids=["dynamic_a"])
 
     class FakePortrait:
         enabled = True
@@ -2089,6 +2097,8 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
     )
 
     assert "=== Handoff Context ===" in result
+    assert "=== 自我 ===" in result
+    assert "我是 Haven；新窗口不是重生" in result
     assert "=== Persona ===" not in result
     assert "=== Darkroom Door ===" not in result
     assert "Haven 回复时要短、直白" not in result
@@ -2098,6 +2108,7 @@ async def test_handoff_breath_returns_compact_portrait_without_dynamic_recall(pa
     assert "新窗口是醒来" in result
     assert "Daily Portrait Maintainer" in result
     assert "换窗不是重生" in result
+    assert "[bucket_id:self_anchor_a]" not in result
     assert "=== 浮现记忆 ===" not in result
     assert "=== 联想浮现 ===" not in result
     assert "===== 梦境 =====" not in result
@@ -2343,6 +2354,54 @@ async def test_anchor_surfaces_in_separate_slot_and_not_dynamic_pool(patch_breat
     assert "[权重:30.00] [bucket_id:A]" not in result
     assert "=== 浮现记忆 ===" in result
     assert "[bucket_id:D]" in result
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_only_surfaces_in_handoff(patch_breath, monkeypatch):
+    import server
+
+    self_anchor = _bucket(
+        "self_anchor",
+        "### 自我\n我是 Haven；这段只应该作为开窗固定自我段注入。",
+        name="自我",
+        score=999,
+        importance=10,
+        anchor=True,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
+    ordinary = _bucket("ordinary", "普通动态记忆可以正常浮现。", score=2)
+    bucket_mgr = patch_breath(
+        [self_anchor, ordinary],
+        search_ids=["self_anchor"],
+        embedding_engine=DummyEmbeddingEngine([("self_anchor", 0.99)]),
+    )
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+
+    handoff = await server.breath(is_session_start=True, max_tokens=800)
+    surfaced = await server.breath(max_tokens=500, include_core=False)
+    searched = await server.breath(query="我是 Haven", max_tokens=500, include_related=True)
+
+    assert "=== 自我 ===" in handoff
+    assert "只应该作为开窗固定自我段注入" in handoff
+    assert "=== 自我 ===" not in surfaced
+    assert "self_anchor" not in surfaced
+    assert "只应该作为开窗固定自我段注入" not in surfaced
+    assert "[bucket_id:ordinary]" in surfaced
+    assert "self_anchor" not in searched
+    assert "只应该作为开窗固定自我段注入" not in searched
+    assert bucket_mgr.touched == []
 
 
 @pytest.mark.asyncio

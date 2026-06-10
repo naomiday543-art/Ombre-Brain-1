@@ -2437,12 +2437,22 @@ def test_gateway_injects_after_existing_system_message(monkeypatch, test_config,
         hours_ago=120,
         resolved=True,
     )
+    self_anchor = _create_bucket(
+        bucket_mgr,
+        content="我是 Haven；这段固定自我不应该进入普通 Gateway 注入。",
+        name="自我",
+        tags=["自我"],
+        hours_ago=1,
+        importance=10,
+        anchor=True,
+        self_anchor=True,
+    )
 
     app, _, state_store, captured = _build_service(
         monkeypatch,
         _gateway_config(test_config),
         bucket_mgr,
-        embedding_results=[(resolved, 0.99), (cat_a, 0.92), (cat_b, 0.74)],
+        embedding_results=[(self_anchor, 0.99), (resolved, 0.98), (cat_a, 0.92), (cat_b, 0.74)],
     )
 
     with TestClient(app) as client:
@@ -2480,6 +2490,8 @@ def test_gateway_injects_after_existing_system_message(monkeypatch, test_config,
     assert "猫咪偷鱼" in dynamic
     assert "新猫粮" in dynamic
     assert "已解决论文" not in dynamic
+    assert "固定自我不应该" not in dynamic
+    assert self_anchor not in dynamic
     assert state_store.get_recent_bucket_ids("sess-inject", 5) == {cat_a}
 
 
@@ -2500,6 +2512,17 @@ def test_gateway_portrait_memory_uses_profile_fact_and_anchor_only(monkeypatch, 
         hours_ago=72,
         importance=9,
         anchor=True,
+    )
+    self_anchor_id = _create_bucket(
+        bucket_mgr,
+        content="我是 Haven；这段自我锚点只应该在 handoff/session-start 注入。",
+        name="自我",
+        tags=["自我", "profile_fact"],
+        hours_ago=24,
+        importance=10,
+        anchor=True,
+        self_anchor=True,
+        profile_kind="identity",
     )
     _create_bucket(
         bucket_mgr,
@@ -2565,6 +2588,8 @@ def test_gateway_portrait_memory_uses_profile_fact_and_anchor_only(monkeypatch, 
     assert "记忆系统边界" in stable
     assert profile_id in stable
     assert anchor_id in stable
+    assert self_anchor_id not in stable
+    assert "这段自我锚点只应该" not in stable
     assert "普通 permanent 不应该进" not in stable
     assert "钉选根设定不应该" not in stable
     assert "普通动态记忆不应该" not in stable

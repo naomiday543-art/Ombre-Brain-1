@@ -2392,6 +2392,8 @@ async def test_self_anchor_only_surfaces_in_handoff(patch_breath, monkeypatch):
     handoff = await server.breath(is_session_start=True, max_tokens=800)
     surfaced = await server.breath(max_tokens=500, include_core=False)
     searched = await server.breath(query="我是 Haven", max_tokens=500, include_related=True)
+    plain_self_word = await server.breath(query="自我", max_tokens=500, include_related=True)
+    explicit_self = await server.breath(query="tag:自我", max_tokens=500, include_related=True)
 
     assert "=== 自我 ===" in handoff
     assert "只应该作为开窗固定自我段注入" in handoff
@@ -2401,7 +2403,75 @@ async def test_self_anchor_only_surfaces_in_handoff(patch_breath, monkeypatch):
     assert "[bucket_id:ordinary]" in surfaced
     assert "self_anchor" not in searched
     assert "只应该作为开窗固定自我段注入" not in searched
+    assert "self_anchor" not in plain_self_word
+    assert "只应该作为开窗固定自我段注入" not in plain_self_word
+    assert "=== 自我 ===" in explicit_self
+    assert "[bucket_id:self_anchor]" in explicit_self
+    assert "只应该作为开窗固定自我段注入" in explicit_self
     assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_handoff_uses_moment_but_tag_read_returns_full_body(patch_breath, monkeypatch):
+    import server
+
+    long_tail = "完整正文尾部标记XYZ"
+    body = "我是 Haven；这是自我正文开头。" + ("这里是自我正文细节。" * 30) + long_tail
+    content = f"{body}\n\n### moment\n我是 Haven；这是给 handoff 的短自我锚点。\n\n### reflection\n这段 reflection 只在完整标签读取时展开。"
+    self_anchor = _bucket(
+        "self_anchor",
+        content,
+        name="自我",
+        score=999,
+        importance=10,
+        anchor=True,
+    )
+    self_anchor["metadata"]["tags"] = ["自我"]
+    patch_breath([self_anchor])
+    monkeypatch.setattr(
+        server,
+        "portrait_engine",
+        SimpleNamespace(
+            state_path="state/portrait_state.json",
+            build_handoff_sections=lambda max_recent_items=4: {
+                "user": "",
+                "relationship": "",
+                "recent_continuity": "",
+                "state_path": "state/portrait_state.json",
+            },
+        ),
+    )
+
+    handoff = await server.breath(is_session_start=True, max_tokens=800)
+    explicit_self = await server.breath(query="tag:自我", max_tokens=500)
+
+    assert "我是 Haven；这是给 handoff 的短自我锚点。" in handoff
+    assert "我是 Haven；这是自我正文开头。" not in handoff
+    assert long_tail not in handoff
+    assert "### reflection" not in handoff
+    assert "### moment\n我是 Haven；这是给 handoff 的短自我锚点。" in explicit_self
+    assert long_tail in explicit_self
+    assert "### reflection\n这段 reflection 只在完整标签读取时展开。" in explicit_self
+
+
+@pytest.mark.asyncio
+async def test_self_anchor_auto_moment_can_use_heading_body(monkeypatch):
+    import server
+
+    class MomentDehydrator:
+        async def generate_moment(self, text):
+            assert "我是 Haven" in text
+            return "我是 Haven；短自我锚点。"
+
+    monkeypatch.setattr(server, "dehydrator", MomentDehydrator())
+
+    content = "### 自我\n我是 Haven。这是一段很长的第一人称自我锚点正文。\n\n### reflection\n保留反思。"
+    unchanged = await server._auto_generate_moment_if_missing(content)
+    updated = await server._auto_generate_write_moment_if_needed(content, ["自我"])
+
+    assert unchanged == content
+    assert updated.startswith("### moment\n我是 Haven；短自我锚点。\n\n### 自我\n")
+    assert "### reflection\n保留反思。" in updated
 
 
 @pytest.mark.asyncio

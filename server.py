@@ -937,13 +937,18 @@ def _select_self_anchor_buckets(all_buckets: list[dict], limit: int = 1) -> list
 
 def _self_anchor_text(bucket: dict) -> str:
     sections = _profile_fact_sections(bucket.get("content", ""))
+    moment = str(sections.get(_profile_key("moment", ""), "") or "").strip()
+    if moment:
+        return _clip_text(_handoff_clean_summary_text(moment, include_detail_sections=True), 260)
+    body_text = _leading_body_text(bucket.get("content", ""))
+    if body_text:
+        return _clip_text(_handoff_clean_summary_text(body_text, include_detail_sections=True), 260)
     for key in (
         SELF_ANCHOR_TAG,
         "self_anchor",
         "first_person_anchor",
         "anchor",
         "fact",
-        "moment",
     ):
         text = str(sections.get(_profile_key(key, ""), "") or "").strip()
         if text:
@@ -959,6 +964,54 @@ def _format_handoff_self_anchor(all_buckets: list[dict], limit: int = 1) -> str:
         if text:
             lines.append(text)
     return "\n".join(lines)
+
+
+def _is_self_anchor_read_request(query: str, domain_key: str = "") -> bool:
+    aliases = {
+        SELF_ANCHOR_TAG,
+        "self_anchor",
+        "first_person_anchor",
+        "first-person-anchor",
+    }
+    for value in (str(query or "").strip(), str(domain_key or "").strip()):
+        lowered = value.lower().strip(" \t\r\n`[]()")
+        tag_value = ""
+        if lowered.startswith("tag:"):
+            tag_value = lowered[4:].strip()
+        elif lowered.startswith("标签:"):
+            tag_value = lowered[3:].strip()
+        elif lowered.startswith("#"):
+            tag_value = lowered[1:].strip()
+        if tag_value and tag_value in aliases:
+            return True
+    return False
+
+
+async def _read_self_anchor_breath(max_tokens: int = 1000, limit: int = 1) -> str:
+    try:
+        all_buckets = await bucket_mgr.list_all(include_archive=False)
+    except Exception as e:
+        logger.error("Self-anchor read failed / 自我读取失败: %s", e)
+        return "自我 anchor 暂时无法访问。"
+    anchors = _select_self_anchor_buckets(all_buckets, limit=limit)
+    if not anchors:
+        return "还没有自我 anchor。"
+    remaining = max(0, int(max_tokens or 0))
+    rows = []
+    for bucket in anchors:
+        meta = bucket.get("metadata", {}) if isinstance(bucket.get("metadata"), dict) else {}
+        text = strip_wikilinks(str(bucket.get("content") or "")).strip()
+        if not text:
+            continue
+        row = f"[bucket_id:{bucket.get('id', '')}] {str(meta.get('name') or SELF_ANCHOR_TAG)}\n{text}"
+        row_tokens = count_tokens_approx(row)
+        if rows and row_tokens > remaining:
+            break
+        rows.append(row)
+        remaining -= min(row_tokens, remaining)
+        if remaining <= 0:
+            break
+    return "=== 自我 ===\n" + ("\n---\n".join(rows) if rows else "还没有可读的自我 anchor。")
 
 
 def _normalize_breath_mode(value: object) -> str:
@@ -1411,11 +1464,28 @@ def _insert_moment_after_leading_body(content: str, moment: str) -> str:
     return f"{moment_block}\n\n{rest}"
 
 
-async def _auto_generate_moment_if_missing(content: str) -> str:
+def _section_text_for_auto_moment(content: str) -> str:
+    sections = _profile_fact_sections(content)
+    for key in (
+        SELF_ANCHOR_TAG,
+        "self_anchor",
+        "first_person_anchor",
+        "anchor",
+        "fact",
+    ):
+        text = str(sections.get(_profile_key(key, ""), "") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+async def _auto_generate_moment_if_missing(content: str, *, section_fallback: bool = False) -> str:
     raw = str(content or "").strip()
     if not raw or _has_memory_section(raw, "moment"):
         return raw
     body_text = _leading_body_text(raw)
+    if (not body_text or len(body_text) < 10) and section_fallback:
+        body_text = _section_text_for_auto_moment(raw)
     if not body_text or len(body_text) < 10:
         return raw
 
@@ -1429,6 +1499,25 @@ async def _auto_generate_moment_if_missing(content: str) -> str:
 
     generated_moment = str(generated_moment or "").strip() or _fallback_moment_from_body(body_text)
     return _insert_moment_after_leading_body(raw, generated_moment) if generated_moment else raw
+
+
+def _is_self_anchor_write_content(content: str, tags: list | tuple | set | None = None) -> bool:
+    if is_self_anchor_metadata({"tags": list(tags or [])}):
+        return True
+    sections = _profile_fact_sections(content)
+    return any(
+        _profile_key(key, "") in {SELF_ANCHOR_TAG, "self_anchor", "first_person_anchor", "first-person-anchor"}
+        for key in sections
+    )
+
+
+async def _auto_generate_write_moment_if_needed(
+    content: str,
+    tags: list | tuple | set | None = None,
+) -> str:
+    if _is_self_anchor_write_content(content, tags):
+        return await _auto_generate_moment_if_missing(content, section_fallback=True)
+    return await _auto_generate_moment_if_missing(content)
 
 
 def _bucket_read_payload(bucket: dict) -> dict:
@@ -5320,6 +5409,9 @@ async def breath(
             logger.error(f"Feel retrieval failed: {e}")
             return "读取 whisper 失败。" if domain_key == "whisper" else "读取 feel 失败。"
 
+    if _is_self_anchor_read_request(query, domain_key):
+        return await _read_self_anchor_breath(max_tokens=max_tokens, limit=min(max_results, 3))
+
     # --- No args or empty query: surfacing mode (weight pool active push) ---
     # --- 无参数或空query：浮现模式（权重池主动推送）---
     if not query or not query.strip():
@@ -6300,8 +6392,6 @@ async def hold(
             "tags": [], "suggested_name": "",
         }
 
-    content = await _auto_generate_moment_if_missing(content)
-
     domain = analysis["domain"]
     valence = analysis["valence"]
     arousal = analysis["arousal"]
@@ -6309,6 +6399,7 @@ async def hold(
     suggested_name = title.strip() or analysis.get("suggested_name", "")
 
     all_tags = list(dict.fromkeys(auto_tags + extra_tags))
+    content = await _auto_generate_write_moment_if_needed(content, all_tags)
     classification = normalize_write_classification(
         memory_subject=analysis.get("memory_subject", ""),
         memory_layer=analysis.get("memory_layer", ""),
@@ -6481,8 +6572,8 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
                 "domain": ["未分类"], "valence": 0.5, "arousal": 0.3,
                 "tags": [], "suggested_name": "",
             }
-        content = await _auto_generate_moment_if_missing(content)
         fast_tags = analysis.get("tags", [])
+        content = await _auto_generate_write_moment_if_needed(content, fast_tags)
         fast_classification = normalize_write_classification(
             memory_subject=analysis.get("memory_subject", ""),
             memory_layer=analysis.get("memory_layer", ""),
@@ -6529,7 +6620,7 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
         try:
             item_tags = item.get("tags", [])
             item_content = _normalize_memory_sections_for_write(item.get("content", ""))
-            item_content = await _auto_generate_moment_if_missing(item_content)
+            item_content = await _auto_generate_write_moment_if_needed(item_content, item_tags)
             item_classification = normalize_write_classification(
                 memory_subject=item.get("memory_subject", ""),
                 memory_layer=item.get("memory_layer", ""),

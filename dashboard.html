@@ -4134,6 +4134,7 @@ function updateStats() {
 function buildFilters() {
   const domains = new Set();
   allBuckets.forEach(b => (b.domain || []).forEach(d => domains.add(d)));
+  const profileDomainAliases = new Set(['profile', 'preference', 'project_milestone']);
   const filters = document.getElementById('filters');
   const types = [
     { key: 'all', label: '全部' },
@@ -4146,7 +4147,9 @@ function buildFilters() {
   ];
   if (allBuckets.some(isSelfAnchorBucket)) types.push({ key: 'tag:self_anchor', label: '自我' });
   if (allBuckets.some(isProfileBucket)) types.push({ key: 'profile', label: '画像' });
-  const domainFilters = Array.from(domains).slice(0, 10).map(function(d) {
+  const domainFilters = Array.from(domains).filter(function(d) {
+    return !profileDomainAliases.has(String(d || '').trim());
+  }).slice(0, 10).map(function(d) {
     return { key: 'domain:' + d, label: d };
   });
   const availableFilters = types.concat(domainFilters).map(function(t) { return t.key; });

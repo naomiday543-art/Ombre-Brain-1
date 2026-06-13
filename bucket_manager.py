@@ -759,6 +759,7 @@ class BucketManager:
         query_valence: float = None,
         query_arousal: float = None,
         include_archive: bool = True,
+        for_merge: bool = False,
     ) -> list[dict]:
         """
         Multi-dimensional indexed search for memory buckets.
@@ -827,7 +828,7 @@ class BucketManager:
                 if normalized >= self.fuzzy_threshold:
                     # Resolved buckets get ranking penalty after thresholding.
                     # 已解决桶先按相关性过阈值，再在排序阶段降权。
-                    if meta.get("resolved", False):
+                    if meta.get("resolved", False) and not for_merge:
                         normalized *= 0.3
                     bucket["score"] = round(normalized, 2)
                     scored.append(bucket)

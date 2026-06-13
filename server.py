@@ -3036,8 +3036,9 @@ async def _merge_or_create(
         existing = await bucket_mgr.search(
             content,
             limit=1,
-            domain_filter=domain or None,
+            domain_filter=None,
             include_archive=False,
+            for_merge=True,
         )
     except Exception as e:
         logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")

@@ -6118,6 +6118,24 @@ async def breath(
     )
     word_map_hint_bucket_ids = set(word_map_scores)
 
+    # --- Time-decay re-ranking: blend search relevance with decay freshness ---
+    # --- 时间衰减重排序：搜索相关性 × 衰减新鲜度混合 ---
+    _DECAY_BLEND_ALPHA = 0.75  # 75% search relevance, 25% decay influence
+    for b in matches:
+        raw_search = float(b.get("score", 0.0) or 0.0)
+        meta = b.get("metadata") or {}
+        decay_score = decay_engine.calculate_score(meta)
+        # Normalize decay to 0-1 range (cap at 20 for practical ceiling)
+        decay_norm = min(1.0, decay_score / 20.0) if decay_score < 999 else 1.0
+        b["_search_score"] = raw_search
+        b["_decay_score"] = round(decay_score, 4)
+        b["score"] = round(raw_search * (_DECAY_BLEND_ALPHA + (1 - _DECAY_BLEND_ALPHA) * decay_norm), 2)
+        bid = str(b.get("id") or "")
+        if bid in seed_diagnostics:
+            seed_diagnostics[bid]["decay_score"] = b["_decay_score"]
+            seed_diagnostics[bid]["blended_score"] = b["score"]
+    matches.sort(key=lambda b: float(b.get("score", 0.0) or 0.0), reverse=True)
+
     if retrieval_mode == "bucket":
         direct_results = []
         token_used = 0

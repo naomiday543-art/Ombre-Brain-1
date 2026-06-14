@@ -6398,6 +6398,17 @@ async def breath(
             logger.warning(f"Failed to render direct moment / 直接命中片段渲染失败: {e}")
             continue
 
+    # Weak-touch recalled-but-not-directly-rendered buckets so they accumulate
+    # activation signal too. Fixes the "always recalled, always 0 activation" bias.
+    # 召回但未直出的桶轻量 +0.3，避免马太效应。
+    weak_touched: set[str] = set()
+    for moment in returned_moments:
+        bid = str(moment.get("bucket_id") or "")
+        if not bid or bid in displayed_bucket_ids or bid in weak_touched:
+            continue
+        await bucket_mgr.touch_weak(bid)
+        weak_touched.add(bid)
+
     related_entry = ""
     secondary_moment_ids: list[str] = []
     related_source_bucket_ids: list[str] = []

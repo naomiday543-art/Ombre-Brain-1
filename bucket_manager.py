@@ -689,6 +689,24 @@ class BucketManager:
         except Exception as e:
             logger.warning(f"Failed to touch bucket / 触碰桶失败: {bucket_id}: {e}")
 
+    async def touch_weak(self, bucket_id: str, weight: float = 0.3) -> None:
+        """
+        Lightweight touch for buckets that were recalled but not directly rendered.
+        Bumps activation_count by `weight` without changing last_active or triggering ripple.
+        召回但未直出的桶用：只加 activation_count，不动 last_active，不触发涟漪。
+        """
+        file_path = self._find_bucket_file(bucket_id)
+        if not file_path:
+            return
+        try:
+            post = frontmatter.load(file_path)
+            current_count = post.get("activation_count", 0)
+            post["activation_count"] = round(current_count + weight, 1)
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(frontmatter.dumps(post))
+        except Exception as e:
+            logger.warning(f"Failed to weak-touch bucket / 弱触碰桶失败: {bucket_id}: {e}")
+
     async def _time_ripple(self, source_id: str, reference_time: datetime, hours: float = 48.0) -> None:
         """
         Slightly boost activation_count of buckets created/activated near the reference time.

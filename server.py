@@ -3044,9 +3044,38 @@ async def _merge_or_create(
         logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
         existing = []
 
+    # --- Embedding fallback: if BM25 didn't find a merge candidate, try vector similarity ---
+    # --- 向量兜底：BM25 没找到合并候选时，用 embedding 相似度再找一次 ---
+    merge_threshold = config.get("merge_threshold", 75)
+    bm25_found = existing and existing[0].get("score", 0) > merge_threshold
+    if allow_merge and not bm25_found and getattr(embedding_engine, "enabled", False):
+        try:
+            emb_threshold = config.get("embedding_merge_threshold", 0.82)
+            similar = await embedding_engine.search_similar(content, top_k=3)
+            for candidate_id, similarity in (similar or []):
+                if float(similarity) < emb_threshold:
+                    continue
+                candidate = await bucket_mgr.get(candidate_id)
+                if not candidate:
+                    continue
+                meta = candidate.get("metadata", {})
+                if meta.get("pinned") or meta.get("protected") or meta.get("type") == "feel" or meta.get("resolved"):
+                    continue
+                if _is_profile_fact_bucket(candidate):
+                    continue
+                candidate["score"] = float(similarity) * 100
+                existing = [candidate]
+                logger.info(
+                    f"Embedding merge candidate found / 向量兜底找到合并候选: "
+                    f"{meta.get('name', candidate_id)} (sim={similarity:.3f})"
+                )
+                break
+        except Exception as e:
+            logger.warning(f"Embedding merge search failed / 向量合并搜索失败: {e}")
+
     related_bucket = await _find_readonly_related_bucket(content)
 
-    if allow_merge and existing and existing[0].get("score", 0) > config.get("merge_threshold", 75):
+    if allow_merge and existing and existing[0].get("score", 0) > merge_threshold:
         bucket = existing[0]
         # --- Never merge into pinned/protected buckets ---
         # --- 不合并到钉选/保护桶 ---
@@ -9439,6 +9468,7 @@ async def api_config_get(request):
             ),
         },
         "merge_threshold": config.get("merge_threshold", 75),
+        "embedding_merge_threshold": config.get("embedding_merge_threshold", 0.82),
         "transport": config.get("transport", "stdio"),
         "buckets_dir": config.get("buckets_dir", ""),
     })
@@ -9558,6 +9588,9 @@ async def api_config_update(request):
     if "merge_threshold" in body:
         config["merge_threshold"] = int(body["merge_threshold"])
         updated.append("merge_threshold")
+    if "embedding_merge_threshold" in body:
+        config["embedding_merge_threshold"] = float(body["embedding_merge_threshold"])
+        updated.append("embedding_merge_threshold")
 
     gateway_hot_update_payload = {}
     # --- Reranker config ---
@@ -9975,6 +10008,8 @@ async def api_config_update(request):
 
             if "merge_threshold" in body:
                 save_config["merge_threshold"] = int(body["merge_threshold"])
+            if "embedding_merge_threshold" in body:
+                save_config["embedding_merge_threshold"] = float(body["embedding_merge_threshold"])
 
             if "gateway" in body:
                 sc_gateway = save_config.setdefault("gateway", {})

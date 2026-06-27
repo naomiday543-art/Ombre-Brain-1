@@ -43,6 +43,12 @@ identity:
 # 存新记忆时，如果与已有桶的相似度超过此值（0-100），则合并而非新建
 merge_threshold: 75
 
+# When BM25 fails to find a merge candidate, fall back to embedding
+# similarity. Range 0.0-1.0, higher = stricter. 0.82 catches
+# "same topic, different wording" without false merges.
+# BM25 找不到合并候选时，回退到向量相似度。0~1，越高越严格。
+embedding_merge_threshold: 0.82
+
 # --- Write path / 写入路径 ---
 # Semantic related-memory lookup is useful, but should not hold MCP responses
 # forever when the embedding provider is slow.

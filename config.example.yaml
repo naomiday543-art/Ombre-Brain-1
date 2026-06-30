@@ -54,7 +54,14 @@ embedding_merge_threshold: 0.82
 # forever when the embedding provider is slow.
 # 语义查旧记忆很有用，但 embedding 服务慢时不能一直卡住 MCP 响应。
 write_path:
-  semantic_search_timeout_seconds: 3  # Timeout for write-time semantic lookup / 写入时语义查找超时秒数
+  # Includes the embedding API call AND local vector compare. SiliconFlow / DeepSeek
+  # embeddings can take 2–5s per call alone, so 3s frequently times out and silently
+  # falls back to BM25-only candidates → near-duplicate buckets accumulate over time.
+  # 10s is the recommended floor when using SiliconFlow embeddings.
+  # 这个值包含 embedding API 调用 + 本地向量比对全程。SiliconFlow / DeepSeek 的
+  # embedding 单次就常常 2–5s，3s 容易超时并悄悄退回 BM25-only 候选，长期下来
+  # 累积近义重复桶。用 SiliconFlow 建议至少 10s。
+  semantic_search_timeout_seconds: 10  # Timeout for write-time semantic lookup / 写入时语义查找超时秒数
 
 # --- Automatic write gate / 自动写入门卫 ---
 # Only applies to grow(auto=true) or sources such as Operit/workflow/worker.

@@ -2064,6 +2064,47 @@ async def test_search_writes_recall_diagnostics_jsonl(patch_breath, tmp_path):
     assert candidates["I"]["gate"] == "filtered"
     assert "relationship_identity_vs_intimacy" in candidates["I"]["gate_reasons"]
     assert event["final"]["direct_moment_ids"]
+    # WO-1 telemetry fields land; a non-complaint query is not flagged.
+    assert event["recall_failure"] is False
+    assert event["recall_failure_terms"] == []
+    assert isinstance(event["candidate_count"], int)
+    assert isinstance(event["selected_candidates"], list)
+
+
+@pytest.mark.asyncio
+async def test_search_flags_recall_failure_on_user_complaint(patch_breath, tmp_path):
+    import server
+
+    log_path = tmp_path / "state" / "recall_diagnostics.jsonl"
+    diagnostics = RecallDiagnosticsLogger(
+        {
+            "state_dir": str(tmp_path / "state"),
+            "buckets_dir": str(tmp_path / "buckets"),
+            "recall_diagnostics": {"enabled": True, "path": str(log_path)},
+        }
+    )
+    patch_breath(
+        [_bucket("A", "海边约定：说好夏天一起去看海。", importance=8)],
+        search_ids=["A"],
+        recall_diagnostics=diagnostics,
+    )
+
+    await server.breath(
+        query="你说过夏天要带我去海边的，你忘了吗",
+        max_results=3,
+        max_tokens=500,
+        include_related=False,
+    )
+
+    event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[-1])
+    assert event["recall_failure"] is True
+    # Both the simplified 你说过 and shared 你忘了 patterns are captured.
+    assert "你说过" in event["recall_failure_terms"]
+    assert "你忘了" in event["recall_failure_terms"]
+    for selected in event["selected_candidates"]:
+        assert "admission_reason" in selected
+        assert "rerank_score" in selected
+        assert "semantic_score" in selected
 
 
 @pytest.mark.asyncio

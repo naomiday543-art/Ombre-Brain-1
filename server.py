@@ -6083,13 +6083,26 @@ async def breath(
                 entry_tokens = count_tokens_approx(entry)
                 if entry_tokens > token_budget:
                     break
-                # NOTE: no touch() here — surfacing should NOT reset decay timer
+                # NOTE: no full touch() here — surfacing should NOT reset decay timer.
+                # 弱触碰记账见循环后（activation ledger, 2026-07-19）。
                 dynamic_results.append(entry)
                 surfaced_buckets.append(b)
                 token_budget -= entry_tokens
             except Exception as e:
                 logger.warning(f"Failed to dehydrate surfaced bucket / 浮现脱水失败: {e}")
                 continue
+
+        # Activation ledger (2026-07-19): weight-pool surfacing previously left no trace —
+        # activation_count only moved on query-driven search, so the panel counter froze and
+        # decay's activation_count^0.3 factor starved. Weak-touch each rendered dynamic bucket:
+        # +0.3 only, last_active untouched, no ripple — the original "don't reset decay timer"
+        # intent holds, but usage is finally on the books.
+        # 激活账本：权重池直出的桶弱触碰记账（只 +0.3，不动衰减时钟、不触发涟漪）。
+        for b in surfaced_buckets:
+            try:
+                await bucket_mgr.touch_weak(b["id"])
+            except Exception as e:
+                logger.warning(f"Weak-touch failed for surfaced bucket / 弱触碰失败: {b.get('id')}: {e}")
 
         related_block = ""
         related_sources = anchor_buckets + surfaced_buckets

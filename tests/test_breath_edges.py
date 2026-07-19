@@ -109,6 +109,7 @@ class FakeBucketManager:
         self.buckets = {bucket["id"]: bucket for bucket in buckets}
         self.search_ids = search_ids or []
         self.touched: list[str] = []
+        self.weak_touched: list[tuple[str, float]] = []
 
     async def list_all(self, include_archive: bool = False) -> list[dict]:
         return list(self.buckets.values())
@@ -128,6 +129,9 @@ class FakeBucketManager:
 
     async def touch(self, bucket_id: str) -> None:
         self.touched.append(bucket_id)
+
+    async def touch_weak(self, bucket_id: str, weight: float = 0.3) -> None:
+        self.weak_touched.append((bucket_id, weight))
 
     def filter_specific_lexical_terms(
         self,
@@ -2921,3 +2925,57 @@ async def test_related_block_suppresses_random_drift(patch_breath, monkeypatch):
     assert "[bucket_id:B]" in result
     assert "--- 久未碰过 ---" not in result
     assert "D drift candidate" not in result
+
+
+# ── Activation ledger（2026-07-19 激活账本补丁）────────────────────────────────
+# 权重池（无参 breath）直出的动态桶必须弱触碰记账：+0.3、不动衰减时钟、不触发涟漪。
+# 全额 touch 仍然只属于检索直接命中——两本账不许串。
+
+
+@pytest.mark.asyncio
+async def test_surfacing_weak_touches_rendered_dynamic_buckets(patch_breath):
+    import server
+
+    bucket_mgr = patch_breath(
+        [
+            _bucket("A", "A actual surface", score=9.0),
+            _bucket("B", "B permanent anchor stays off the ledger", bucket_type="permanent"),
+        ]
+    )
+
+    result = await server.breath(max_tokens=50, include_core=False)
+
+    assert "[bucket_id:A]" in result
+    assert bucket_mgr.weak_touched == [("A", 0.3)]
+    assert bucket_mgr.touched == []
+
+
+@pytest.mark.asyncio
+async def test_budget_skipped_dynamic_bucket_not_weak_touched(patch_breath):
+    import server
+
+    bucket_mgr = patch_breath(
+        [_bucket("A", "A too expensive to surface", score=9.0)],
+        token_counter=lambda text: 10,
+    )
+
+    result = await server.breath(max_tokens=5, include_core=False)
+
+    assert "[bucket_id:A]" not in result
+    assert bucket_mgr.weak_touched == []
+
+
+@pytest.mark.asyncio
+async def test_search_direct_hit_full_touch_no_weak(patch_breath):
+    import server
+
+    bucket_mgr = patch_breath(
+        [_bucket("A", "A search hit", score=9.0)],
+        search_ids=["A"],
+    )
+
+    result = await server.breath(query="A", max_tokens=50)
+
+    assert "[bucket_id:A]" in result
+    assert bucket_mgr.touched == ["A"]
+    assert bucket_mgr.weak_touched == []

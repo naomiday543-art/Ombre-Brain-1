@@ -10,6 +10,44 @@ from utils import now_iso
 logger = logging.getLogger("ombre_brain.recall_diagnostics")
 
 
+# User complaint patterns that flag a probable recall miss on the current turn.
+# 用户抱怨模式：命中即认为「上一轮/近轮大概率漏撈」。
+# 简繁双轨并列；日后要 append 新说法，直接往这个元组加字符串即可（纯子串匹配）。
+RECALL_COMPLAINT_PATTERNS: tuple[str, ...] = (
+    "你忘了",
+    "你忘記了",
+    "你不记得",
+    "你不記得",
+    "你说过",
+    "你說過",
+    "你怎么不记得",
+    "你怎麼不記得",
+    "我不是跟你说过",
+    "我不是跟你說過",
+)
+
+
+def matched_complaint_terms(text: Any) -> list[str]:
+    """Return the complaint patterns present in ``text`` (substring match).
+
+    Fail-soft: any unexpected input coerces to empty — telemetry must never
+    raise into the recall path.
+    返回命中的抱怨模式；任何异常一律吞掉返回空表，绝不让遥测打掛召回。
+    """
+    try:
+        haystack = text if isinstance(text, str) else str(text or "")
+    except Exception:
+        return []
+    if not haystack:
+        return []
+    return [pattern for pattern in RECALL_COMPLAINT_PATTERNS if pattern in haystack]
+
+
+def is_recall_complaint(text: Any) -> bool:
+    """True when the user message looks like a recall-miss complaint."""
+    return bool(matched_complaint_terms(text))
+
+
 class RecallDiagnosticsLogger:
     """Append-only JSONL recall diagnostics for admin debugging."""
 

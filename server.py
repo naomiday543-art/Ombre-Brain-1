@@ -117,7 +117,11 @@ from persona_engine import PersonaStateEngine
 from persona_event_selection import select_persona_events
 from portrait_engine import DailyPortraitMaintainer
 from reflection_engine import ReflectionEngine
-from recall_diagnostics import RecallDiagnosticsLogger
+from recall_diagnostics import (
+    RecallDiagnosticsLogger,
+    is_recall_complaint,
+    matched_complaint_terms,
+)
 from reranker_engine import RerankerEngine
 from self_anchor import SELF_ANCHOR_TAG, is_self_anchor_bucket, is_self_anchor_metadata
 from scripts.migrate_affect_anchor_sections import plan_bucket_migration
@@ -4683,11 +4687,41 @@ def _write_breath_recall_diagnostics(
         }
         candidates.append(candidate)
 
+    # Selected (returned/injected) candidates: their admission reason and
+    # rerank/semantic scores — the columns a recall-miss post-mortem reads.
+    # 入選候選的准入理由與 rerank/語義分；WO-1 遙測用來複盤漏撈。
+    # Fail-soft: any failure degrades to an empty summary, never breaks recall.
+    selected_candidates: list[dict] = []
+    try:
+        for moment in returned_moments:
+            moment_id = str(moment.get("moment_id") or "")
+            bucket_id = str(moment.get("bucket_id") or "")
+            final = reranked_by_id.get(moment_id) or gated_by_id.get(moment_id) or moment
+            seed = seed_diagnostics.get(bucket_id, {})
+            admission = _breath_moment_admission_decision(query, final, seed_diagnostics)
+            selected_candidates.append(
+                {
+                    "moment_id": moment_id,
+                    "bucket_id": bucket_id,
+                    "admission_reason": admission.reason,
+                    "rerank_score": _safe_float(final.get("rerank_score")),
+                    "semantic_score": _safe_float(seed.get("embedding_score")),
+                    "combined_score": _safe_float(final.get("combined_score")),
+                }
+            )
+    except Exception as exc:  # pragma: no cover - defensive, telemetry must not break recall
+        logger.warning("Failed to summarize selected recall candidates: %s", exc)
+        selected_candidates = []
+
     recall_diagnostics.write(
         {
             "source": "breath",
             "mode": "search",
             "query": str(query or ""),
+            "recall_failure": is_recall_complaint(query),
+            "recall_failure_terms": matched_complaint_terms(query),
+            "candidate_count": len(pre_gate_candidates),
+            "selected_candidates": selected_candidates,
             "recall_thresholds": recall_thresholds,
             "seed_buckets": list(seed_diagnostics.values())[:max_candidates],
             "candidates": candidates,

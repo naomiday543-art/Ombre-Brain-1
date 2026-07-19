@@ -182,6 +182,15 @@ reranker:
 # Admin-only append log for recall debugging. It records query, candidate ids,
 # short previews, scores, gate reasons, rerank score, and final selected ids.
 # 管理员调试用追加日志；默认关闭，避免把 query 和候选记忆写入磁盘。
+#
+# WO-1 recall-miss telemetry / 召回失败遥测（追加字段，纯旁观，不改召回行为）:
+#   recall_failure        bool  — 当前 query 命中用户抱怨模式即为 true，语义=近轮大概率漏撈
+#   recall_failure_terms  list  — 命中的抱怨模式（便于 grep，模式表见 recall_diagnostics.py）
+#   candidate_count       int   — 本轮候选池大小
+#   selected_candidates   list  — 入选候选的 admission_reason + rerank/semantic/combined 分
+# 开启方式（1-2 周量测窗口后即可秒关；默认保持 false）:
+#   enabled: true  或  OMBRE_RECALL_DIAGNOSTICS_ENABLED=1
+# 只看漏撈行（grep 一行命令见 report-memory-gateway-20260720.md 实作附录）。
 recall_diagnostics:
   enabled: false
   path: ""                         # default: state_dir/recall_diagnostics.jsonl

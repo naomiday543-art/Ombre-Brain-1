@@ -2469,6 +2469,70 @@ async def dream_hook(request):
 
 
 # =============================================================
+# /dreams endpoint: 内部体检面板用（供 kitten admin 代理）。
+# 列出所有梦档（含未浮现、含他没讲过的），按 generated_at 倒序，
+# 每颗梦回 metadata + 正文全文。ombre-brain 无公网路由，此端点不经
+# nginx 暴露；对外唯一窗口＝kitten admin 代理（有鉴权）。
+# =============================================================
+@mcp.custom_route("/dreams", methods=["GET"])
+async def dreams_endpoint(request):
+    from starlette.responses import JSONResponse
+    try:
+        records = dream_engine.list_records()
+        records.sort(
+            key=lambda r: str(r.metadata.get("generated_at") or ""),
+            reverse=True,
+        )
+        payload = []
+        for record in records:
+            meta = record.metadata or {}
+            affect = meta.get("core_affect")
+            if not isinstance(affect, dict):
+                affect = {}
+            payload.append(
+                {
+                    "dream_id": record.dream_id,
+                    "generated_at": meta.get("generated_at") or "",
+                    "local_date": meta.get("local_date") or "",
+                    "ai_name": meta.get("ai_name") or dream_engine.identity.get("ai_name") or "AI",
+                    "valence": affect.get("valence"),
+                    "arousal": affect.get("arousal"),
+                    "surfaced": bool(meta.get("surfaced", False)),
+                    "surfaced_at": meta.get("surfaced_at") or "",
+                    "recall_cues": meta.get("recall_cues") or [],
+                    "body": record.body,
+                }
+            )
+        return JSONResponse(payload)
+    except Exception as e:
+        logger.warning(f"/dreams failed: {e}")
+        return JSONResponse([])
+
+
+# =============================================================
+# /dream-surface endpoint: session 开场时由 kitten 调用，真梦浮现。
+# 走引擎现成 surface_with_status（session_start 语境）：命中则引擎自标
+# surfaced（现成 claim 机制、一次性删档）并回浮现文本；未命中/ineligible
+# 回空。阈值/次数上限/最小梦龄全用引擎现值，不调参、不按 valence 过滤。
+# =============================================================
+@mcp.custom_route("/dream-surface", methods=["GET"])
+async def dream_surface_endpoint(request):
+    from starlette.responses import PlainTextResponse
+    try:
+        result = await dream_engine.surface_with_status(
+            query="",
+            valence=-1,
+            arousal=-1,
+            is_session_start=True,
+            embedding_engine=embedding_engine,
+        )
+        return PlainTextResponse(str(result.get("text") or ""))
+    except Exception as e:
+        logger.warning(f"/dream-surface failed: {e}")
+        return PlainTextResponse("")
+
+
+# =============================================================
 # Internal helper: merge-or-create
 # 内部辅助：检查是否可合并，可以则合并，否则新建
 # Shared by hold and grow to avoid duplicate logic

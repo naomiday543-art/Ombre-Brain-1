@@ -257,6 +257,10 @@ class BucketManager:
             metadata["resolved"] = True
         if digested:
             metadata["digested"] = True
+        if not name:
+            # 命名缺失（上游限流等场景）→ 打待命名标记，补命名巡逻会回填
+            # Naming missing (e.g. upstream rate-limited) → mark for the repair loop to backfill
+            metadata["pending_name"] = True
         if source:
             metadata["source"] = source
         if extra_metadata:
@@ -387,6 +391,11 @@ class BucketManager:
             post["name"] = sanitize_name(kwargs["name"])
         if "resolved" in kwargs:
             post["resolved"] = bool(kwargs["resolved"])
+        if "pending_name" in kwargs:
+            if kwargs["pending_name"]:
+                post["pending_name"] = True
+            else:
+                post.metadata.pop("pending_name", None)
         if "pinned" in kwargs:
             post["pinned"] = bool(kwargs["pinned"])
             if kwargs["pinned"]:

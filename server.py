@@ -10720,6 +10720,80 @@ if __name__ == "__main__":
             pt.start()
             logger.info("Portrait scheduler enabled / 画像定时器已启用")
 
+        async def _pending_name_repair_loop():
+            # 补命名巡逻：dehydration 命名被上游限流打掛时，桶会以 id 当名字落盘（pending_name 标记）。
+            # 这里定期回头补名字＋归域，批量小、串行带间隔，避免自己再触发限流。
+            # Pending-name repair: when upstream rate limits kill dehydration naming, buckets land
+            # with their id as name. This loop retries naming later — small serial batches to stay
+            # below the rate limit.
+            await asyncio.sleep(40)
+            local_bucket_mgr = BucketManager(config)
+            local_dehydrator = Dehydrator(config)
+            hex_id_name = re.compile(r"^[0-9a-f]{10,16}$")
+            while True:
+                repair_cfg = config.get("pending_name_repair", {}) if isinstance(config.get("pending_name_repair", {}), dict) else {}
+                try:
+                    if repair_cfg.get("enabled", True):
+                        all_buckets = await local_bucket_mgr.list_all()
+                        pending = [
+                            b for b in all_buckets
+                            if not b["metadata"].get("resolved", False)
+                            and not b["metadata"].get("deprecated", False)
+                            and not b["metadata"].get("pinned", False)
+                            and not b["metadata"].get("protected", False)
+                            and not b["metadata"].get("anchor", False)
+                            and (
+                                b["metadata"].get("pending_name")
+                                or (
+                                    str(b["metadata"].get("name", "")) == str(b["id"])
+                                    and hex_id_name.fullmatch(str(b["id"]))
+                                )
+                            )
+                        ]
+                        for b in pending[: int(repair_cfg.get("batch_limit", 3))]:
+                            try:
+                                analysis = await local_dehydrator.analyze(b["content"])
+                                new_name = str(analysis.get("suggested_name") or "").strip()
+                                if not new_name:
+                                    # 上游仍限流 → 留给下一轮 / still throttled, retry next round
+                                    continue
+                                update_kwargs = {"name": new_name, "pending_name": False}
+                                old_domain = b["metadata"].get("domain") or []
+                                new_domain = [d for d in (analysis.get("domain") or []) if d and d != "未分类"]
+                                if new_domain and (not old_domain or old_domain == ["未分类"]):
+                                    update_kwargs["domain"] = new_domain
+                                await local_bucket_mgr.update(b["id"], **update_kwargs)
+                                if "domain" in update_kwargs:
+                                    fp = local_bucket_mgr._find_bucket_file(b["id"])
+                                    btype = str(b["metadata"].get("type", "dynamic"))
+                                    if fp:
+                                        type_dir = {
+                                            "permanent": local_bucket_mgr.permanent_dir,
+                                            "feel": local_bucket_mgr.feel_dir,
+                                        }.get(btype, local_bucket_mgr.dynamic_dir)
+                                        local_bucket_mgr._move_bucket(fp, type_dir, update_kwargs["domain"])
+                                logger.info(
+                                    "Pending-name repaired / 补命名完成: %s → %s", b["id"], new_name
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Pending-name repair item failed / 单桶补命名失败: %s: %s", b["id"], e
+                                )
+                            await asyncio.sleep(float(repair_cfg.get("gap_seconds", 5)))
+                except Exception as e:
+                    logger.warning("Pending-name repair failed / 补命名巡逻失败: %s", e)
+                await asyncio.sleep(int(repair_cfg.get("interval_minutes", 30)) * 60)
+
+        def _start_pending_name_repair_scheduler():
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_pending_name_repair_loop())
+
+        _pnr_cfg = config.get("pending_name_repair", {}) if isinstance(config.get("pending_name_repair", {}), dict) else {}
+        if _pnr_cfg.get("enabled", True):
+            pnrt = threading.Thread(target=_start_pending_name_repair_scheduler, daemon=True)
+            pnrt.start()
+            logger.info("Pending-name repair scheduler enabled / 补命名巡逻已启用")
+
         async def _dream_loop():
             await asyncio.sleep(30)
             local_bucket_mgr = BucketManager(config)

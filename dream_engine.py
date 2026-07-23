@@ -847,6 +847,83 @@ class DreamEngine:
                 self._delete_record(record, f"unsurfaced_after_{self.max_surface_attempts}_attempts", embedding_engine)
         return {"status": "skipped", "reason": "no_resonance"}
 
+    async def surface_morning(self, window_hours: float = 20, now: datetime | None = None) -> dict:
+        """早安带梦通道（工单 dream-morning-20260723）。
+
+        与 surface_with_status 的差异——不评分、不掷自发彩票、无最小梦龄下限:
+        早安讲的就是「昨夜的梦」，候选窗口本身即筛选（未浮现且 generated_at 距今
+        <= window_hours 的梦），取最近一颗。3h 最小梦龄是防「当夜同会话就讲」，
+        早安讲昨夜的梦正是本意，不适用。
+        复用同一把 claim 档并发锁（与 surface_with_status 同手法）；标 surfaced +
+        surfaced_at，但 **retain 保留档案**（她 7/19 拍板 admin 全看，删档会让梦境
+        tab 缺页）——不走一次性删档。events.jsonl 的 surfaced 事件带 mode:"morning"
+        以资区分。回传 dict 形状与 surface_with_status 一致。
+        """
+        if not self.enabled or not self.surface_enabled:
+            return {"status": "skipped", "reason": "disabled"}
+        now_local = self._now(now)
+        window = max(0.0, float(window_hours))
+        pending = [
+            record
+            for record in self.list_records()
+            if not record.surfaced
+            and (now_local - record.generated_at.astimezone(self.tz)).total_seconds() / 3600 <= window
+        ]
+        if not pending:
+            return {"status": "skipped", "reason": "no_pending_dream"}
+        # 取最近一颗（generated_at 最大）——「昨夜的梦」。
+        pending.sort(key=lambda r: r.generated_at, reverse=True)
+        record = pending[0]
+
+        # 复用 surface_with_status 的 claim 档并发锁：TTL 过期的孤儿锁先清，
+        # O_CREAT|O_EXCL 抢占，抢不到＝另一路径正在浮现同颗，让位。
+        claim_path = record.path.with_suffix(record.path.suffix + ".claim")
+        if claim_path.exists():
+            try:
+                modified = datetime.fromtimestamp(claim_path.stat().st_mtime, timezone.utc)
+                if (datetime.now(timezone.utc) - modified).total_seconds() > self.claim_ttl_minutes * 60:
+                    claim_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            fd = os.open(str(claim_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return {"status": "skipped", "reason": "already_claimed"}
+        surfaced_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            if not record.path.exists():
+                return {"status": "skipped", "reason": "record_missing"}
+            surfaced_record = self._write_record(
+                {**record.metadata, "surfaced": True, "surfaced_at": surfaced_at},
+                record.body,
+            )
+            self._log_event(
+                "surfaced",
+                {
+                    "dream_id": surfaced_record.dream_id,
+                    "generated_at": surfaced_record.metadata.get("generated_at"),
+                    "surfaced_at": surfaced_at,
+                    "mode": "morning",
+                },
+            )
+            text = self._format_surface(surfaced_record)
+            # retain：不 _delete_record，档案留在盘上供 admin 体检。
+            return {
+                "status": "injected",
+                "reason": "morning",
+                "retained": True,
+                "text": text,
+                "dream_id": surfaced_record.dream_id,
+                "generated_at": surfaced_record.metadata.get("generated_at"),
+                "surfaced_at": surfaced_at,
+            }
+        finally:
+            try:
+                claim_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def dashboard_records(self, limit: int = 30) -> list[dict]:
         entries: dict[str, dict] = {}
         for event in self._read_events():

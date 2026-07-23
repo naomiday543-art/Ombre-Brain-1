@@ -2518,18 +2518,26 @@ async def dreams_endpoint(request):
 # 走引擎现成 surface_with_status（session_start 语境）：命中则引擎自标
 # surfaced（现成 claim 机制、一次性删档）并回浮现文本；未命中/ineligible
 # 回空。阈值/次数上限/最小梦龄全用引擎现值，不调参、不按 valence 过滤。
+#
+# ?mode=morning（工单 dream-morning-20260723）：早安管线专用分流，走
+# surface_morning——不评分、不擲彩票、无最小梦龄，取昨夜（<=20h）最近一颗，
+# 标 surfaced 但 retain 保留档案。**无参路径行为 bit-for-bit 不变**。
+# 回传仍是 PlainTextResponse（浮现文本或空）。
 # =============================================================
 @mcp.custom_route("/dream-surface", methods=["GET"])
 async def dream_surface_endpoint(request):
     from starlette.responses import PlainTextResponse
     try:
-        result = await dream_engine.surface_with_status(
-            query="",
-            valence=-1,
-            arousal=-1,
-            is_session_start=True,
-            embedding_engine=embedding_engine,
-        )
+        if request.query_params.get("mode") == "morning":
+            result = await dream_engine.surface_morning()
+        else:
+            result = await dream_engine.surface_with_status(
+                query="",
+                valence=-1,
+                arousal=-1,
+                is_session_start=True,
+                embedding_engine=embedding_engine,
+            )
         return PlainTextResponse(str(result.get("text") or ""))
     except Exception as e:
         logger.warning(f"/dream-surface failed: {e}")

@@ -35,7 +35,7 @@ services:
   tunnel:
     image: cloudflare/cloudflared:latest
     container_name: ombre-tunnel
-    restart: unless-stopped
+    restart: "no"   # 殭屍服務:cloudflared 配置已丟,compose rebuild 不許再復活它 (2026-07-23)
     command: >
       tunnel --no-autoupdate --protocol http2
       --config /etc/cloudflared/config.yml
